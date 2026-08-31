@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>CD-BAR 카운터</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0f9ff',
+              100: '#e0f2fe',
+              500: '#0284c7',
+              600: '#0369a1',
+              700: '#075985',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- OpenCV.js 영상처리 라이브러리 -->
+  <script async src="https://cdn.jsdelivr.net/npm/techstark-opencv-js@4.9.0-1/opencv.js" onload="onOpenCvReady();"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&display=swap');
+    
+    * {
+      font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    
+    body {
+      background-color: #f8fafc;
+      color: #0f172a;
+    }
+
+    /* Custom range styling */
+    input[type=range] {
+      -webkit-appearance: none;
+      background: #e2e8f0;
+      height: 6px;
+      border-radius: 999px;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      height: 20px;
+      width: 20px;
+      border-radius: 50%;
+      background: #0284c7;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(2, 132, 199, 0.3);
+      border: 2px solid #ffffff;
+    }
+
+    /* Custom scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="min-h-screen pb-12 antialiased text-slate-800">
+
+  <!-- Top Navigation Header -->
+  <header class="sticky top-0 z-40 w-full bg-white border-b border-slate-200 px-4 py-3 shadow-sm">
+    <div class="max-w-md mx-auto flex items-center justify-between">
+      <div class="flex items-center space-x-2.5">
+        <div class="w-9 h-9 rounded-lg bg-sky-600 flex items-center justify-center text-white font-bold">
+          <i class="fa-solid fa-layer-group text-base"></i>
+        </div>
+        <div>
+          <h1 class="text-base font-bold text-slate-900 leading-none">CD-BAR 카운터</h1>
+          <p class="text-[11px] text-slate-500 mt-0.5">단면 자동 측량 및 중량 계산</p>
+        </div>
+      </div>
+      
+      <!-- Status Badge -->
+      <div id="statusBadge" class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+        <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse" id="statusDot"></span>
+        <span id="status">엔진 확인 중</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-md mx-auto px-4 pt-4 space-y-3.5">
+
+    <!-- Primary Camera Upload Button -->
+    <div>
+      <label for="imageInput" class="w-full bg-sky-600 hover:bg-sky-700 active:bg-sky-800 text-white font-bold py-3.5 px-4 rounded-xl shadow-sm flex items-center justify-center space-x-2 cursor-pointer transition-colors">
+        <i class="fa-solid fa-camera text-lg"></i>
+        <span class="text-sm">사진 촬영 / 앨범에서 선택</span>
+      </label>
+      <input type="file" id="imageInput" accept="image/*" capture="environment" class="hidden">
+    </div>
+
+    <!-- Viewport Canvas Area -->
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="bg-slate-50 px-3.5 py-2 flex items-center justify-between border-b border-slate-200 text-xs text-slate-600">
+        <span class="font-semibold text-slate-700 flex items-center space-x-1.5">
+          <i class="fa-solid fa-eye text-sky-600"></i>
+          <span>분석 화면</span>
+        </span>
+        <span class="text-[11px] text-slate-500">터치 시 추가 / 삭제</span>
+      </div>
+
+      <div class="relative min-h-[280px] flex items-center justify-center bg-slate-900">
+        <canvas id="canvas" class="w-full block touch-none cursor-crosshair"></canvas>
+
+        <!-- Initial Placeholder State -->
+        <div id="canvasPlaceholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-400 space-y-2 p-6 text-center">
+          <div class="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 text-xl">
+            <i class="fa-solid fa-image"></i>
+          </div>
+          <p class="text-xs font-medium text-slate-300">위의 [사진 촬영 / 앨범에서 선택] 버튼을 눌러<br>CD-BAR 단면 사진을 불러오세요.</p>
+        </div>
+      </div>
+
+      <!-- Touch Assist Hint Bar -->
+      <div class="bg-slate-50 px-3.5 py-2 border-t border-slate-200 text-[11px] text-slate-500 flex items-center justify-between">
+        <span><i class="fa-solid fa-circle-info text-sky-600 mr-1"></i>원 터치: 삭제 / 빈곳 터치: 추가</span>
+        <span class="font-medium text-slate-600">수동 보정 가능</span>
+      </div>
+    </div>
+
+    <!-- Main Dashboard Stats -->
+    <div class="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm space-y-3">
+      <!-- Total Count Highlight -->
+      <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+        <div>
+          <span class="text-xs font-semibold text-slate-500">측정 수량</span>
+          <div class="flex items-baseline space-x-1 mt-0.5">
+            <span id="countDisplay" class="text-3xl font-extrabold text-sky-600 tracking-tight">0</span>
+            <span class="text-sm font-semibold text-slate-600">개</span>
+          </div>
+        </div>
+        <div class="text-right">
+          <span class="text-xs font-semibold text-slate-500">총 중량</span>
+          <div class="mt-0.5">
+            <span id="totalWeightKgDisplay" class="text-2xl font-bold text-slate-900 block leading-tight">0.00 kg</span>
+            <span id="totalWeightTonDisplay" class="text-xs font-semibold text-emerald-600 block mt-0.5">0.000 ton</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detail Metric Row -->
+      <div class="flex items-center justify-between text-xs pt-0.5">
+        <span class="text-slate-500">1본당 중량</span>
+        <span id="unitWeightDisplay" class="font-bold text-slate-800">0.00 kg</span>
+      </div>
+    </div>
+
+    <!-- Specification & Weight Settings (Accordion Card) -->
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <button type="button" onclick="toggleCalcSettings()" class="w-full px-4 py-3 flex items-center justify-between bg-slate-50 border-b border-slate-200 text-xs font-bold text-slate-800">
+        <span class="flex items-center space-x-1.5">
+          <i class="fa-solid fa-sliders text-sky-600"></i>
+          <span>규격 및 재질 설정 (중량 계산)</span>
+        </span>
+        <i id="calcChevron" class="fa-solid fa-chevron-down text-slate-400 transition-transform"></i>
+      </button>
+
+      <div id="calcSettingsContent" class="p-4 space-y-3 text-xs">
+        <!-- Material Select -->
+        <div>
+          <label for="materialSelect" class="block font-semibold text-slate-700 mb-1">재질 (비중)</label>
+          <select id="materialSelect" onchange="onMaterialChange()" class="w-full bg-slate-50 border border-slate-300 text-slate-800 font-medium rounded-lg p-2.5 outline-none focus:border-sky-600 focus:bg-white transition">
+            <option value="7.85" selected>탄소강 / 합금강 (7.85 g/cm³)</option>
+            <option value="7.93">STS 304 / 304L (7.93 g/cm³)</option>
+            <option value="7.98">STS 316 / 316L (7.98 g/cm³)</option>
+            <option value="7.70">STS 430 (7.70 g/cm³)</option>
+            <option value="custom">직접 입력</option>
+          </select>
+        </div>
+
+        <!-- Custom Density Input -->
+        <div id="customDensityBox" class="hidden flex-col space-y-1">
+          <label for="customDensity" class="font-semibold text-slate-700">직접 입력 비중 (g/cm³)</label>
+          <input type="number" id="customDensity" value="7.85" step="0.01" oninput="calculateWeight()" class="w-full bg-slate-50 border border-slate-300 text-slate-800 rounded-lg p-2.5 outline-none focus:border-sky-600">
+        </div>
+
+        <!-- Diameter & Length Grid -->
+        <div class="grid grid-cols-2 gap-3">
+          <!-- Diameter Input -->
+          <div>
+            <label for="barDiameter" class="block font-semibold text-slate-700 mb-1">선경 / 직경 (mm)</label>
+            <input type="number" id="barDiameter" value="12" step="0.1" min="1" oninput="calculateWeight()" class="w-full bg-slate-50 border border-slate-300 text-slate-800 font-bold rounded-lg p-2.5 outline-none focus:border-sky-600">
+            <div class="flex flex-wrap gap-1 mt-1.5">
+              <button onclick="setDiameter(6)" class="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 text-slate-600 hover:text-sky-700 text-[11px] font-semibold border border-slate-200 transition">6</button>
+              <button onclick="setDiameter(10)" class="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 text-slate-600 hover:text-sky-700 text-[11px] font-semibold border border-slate-200 transition">10</button>
+              <button onclick="setDiameter(12)" class="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 text-slate-600 hover:text-sky-700 text-[11px] font-semibold border border-slate-200 transition">12</button>
+              <button onclick="setDiameter(16)" class="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 text-slate-600 hover:text-sky-700 text-[11px] font-semibold border border-slate-200 transition">16</button>
+              <button onclick="setDiameter(20)" class="px-2 py-0.5 rounded bg-slate-100 hover:bg-sky-100 text-slate-600 hover:text-sky-700 text-[11px] font-semibold border border-slate-200 transition">20</button>
+            </div>
+          </div>
+
+          <!-- Length Input -->
+          <div>
+            <label for="barLength" class="block font-semibold text-slate-700 mb-1">1본당 길이 (m)</label>
+            <input type="number" id="barLength" value="2.5" step="0.1" min="0.1" oninput="calculateWeight()" class="w-full bg-slate-50 border border-slate-300 text-slate-800 font-bold rounded-lg p-2.5 outline-none focus:border-sky-600">
+            <div class="flex flex-wrap gap-1 mt-1.5">
+              <button onclick="setBarLength(2.0)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-sky-100 text-slate-600 hover:text-sky-700 text-[11px] font-semibold border border-slate-200 transition">2.0m</button>
+              <button onclick="setBarLength(2.5)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-sky-100 text-slate-600 hover:text-sky-700 text-[11px] font-semibold border border-slate-200 transition">2.5m</button>
+              <button onclick="setBarLength(3.0)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-sky-100 text-slate-600 hover:text-sky-700 text-[11px] font-semibold border border-slate-200 transition">3.0m</button>
+              <button onclick="setBarLength(6.0)" class="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-sky-100 text-slate-600 hover:text-sky-700 text-[11px] font-semibold border border-slate-200 transition">6.0m</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Detection Fine-tuning Sliders Card -->
+    <div class="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm space-y-3">
+      <div class="text-xs font-bold text-slate-800 flex items-center justify-between">
+        <span>인식 미세 조절</span>
+        <span class="text-[11px] text-slate-400 font-normal">오탐지 많을 시 감도 조절</span>
+      </div>
+
+      <div class="space-y-3 text-xs">
+        <div>
+          <div class="flex justify-between font-semibold text-slate-600 mb-1">
+            <span>인식 민감도</span>
+            <span class="text-sky-600 font-bold" id="sensVal">30</span>
+          </div>
+          <input type="range" id="sensitivity" min="10" max="60" value="30" oninput="updateOptions()" class="w-full">
+        </div>
+
+        <div>
+          <div class="flex justify-between font-semibold text-slate-600 mb-1">
+            <span>예상 단면 반지름</span>
+            <span class="text-sky-600 font-bold"><span id="radVal">12</span> px</span>
+          </div>
+          <input type="range" id="minRadius" min="6" max="35" value="12" oninput="updateOptions()" class="w-full">
+        </div>
+      </div>
+    </div>
+
+    <!-- Action Control Buttons -->
+    <div class="grid grid-cols-2 gap-2.5 pt-1">
+      <button id="saveBtn" class="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold py-3 px-3 rounded-xl flex items-center justify-center space-x-2 transition disabled:opacity-40 disabled:cursor-not-allowed shadow-sm" disabled>
+        <i class="fa-solid fa-download"></i>
+        <span class="text-xs">결과 이미지 저장</span>
+      </button>
+
+      <button id="resetBtn" class="bg-slate-200 hover:bg-slate-300 active:bg-slate-400 text-slate-700 font-bold py-3 px-3 rounded-xl flex items-center justify-center space-x-2 transition disabled:opacity-40 disabled:cursor-not-allowed" disabled>
+        <i class="fa-solid fa-rotate-left"></i>
+        <span class="text-xs">초기화</span>
+      </button>
+    </div>
+
+  </main>
+
+  <!-- Clean Toast Notification -->
+  <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 transform opacity-0 translate-y-4 pointer-events-none transition-all duration-200 ease-out">
+    <div class="bg-slate-900 text-white px-4 py-2.5 rounded-xl shadow-lg flex items-center space-x-2 text-xs font-medium">
+      <i id="toastIcon" class="fa-solid fa-circle-check text-emerald-400"></i>
+      <span id="toastMsg">저장되었습니다.</span>
+    </div>
+  </div>
+
+  <script>
+    let cvReady = false;
+    let currentImage = null;
+    let detectedCircles = []; // [{x, y, r}, ...]
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const statusBadge = document.getElementById('statusBadge');
+    const statusDot = document.getElementById('statusDot');
+    const countDisplay = document.getElementById('countDisplay');
+    const imageInput = document.getElementById('imageInput');
+    const saveBtn = document.getElementById('saveBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const placeholder = document.getElementById('canvasPlaceholder');
+
+    // Toast Alert Helper
+    function showToast(msg, isSuccess = true) {
+      const toast = document.getElementById('toast');
+      const toastMsg = document.getElementById('toastMsg');
+      const toastIcon = document.getElementById('toastIcon');
+
+      toastMsg.innerText = msg;
+      if (isSuccess) {
+        toastIcon.className = "fa-solid fa-circle-check text-emerald-400 text-sm";
+      } else {
+        toastIcon.className = "fa-solid fa-circle-exclamation text-amber-400 text-sm";
+      }
+
+      toast.classList.remove('opacity-0', 'translate-y-4', 'pointer-events-none');
+      toast.classList.add('opacity-100', 'translate-y-0');
+
+      setTimeout(() => {
+        toast.classList.remove('opacity-100', 'translate-y-0');
+        toast.classList.add('opacity-0', 'translate-y-4', 'pointer-events-none');
+      }, 2500);
+    }
+
+    // Toggle Calc Accordion
+    function toggleCalcSettings() {
+      const content = document.getElementById('calcSettingsContent');
+      const chevron = document.getElementById('calcChevron');
+      if (content.classList.contains('hidden')) {
+        content.classList.remove('hidden');
+        chevron.classList.remove('rotate-180');
+      } else {
+        content.classList.add('hidden');
+        chevron.classList.add('rotate-180');
+      }
+    }
+
+    // OpenCV 준비 완료
+    function onOpenCvReady() {
+      cvReady = true;
+      statusEl.innerText = "준비 완료";
+      statusBadge.className = "inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200";
+      statusDot.className = "w-2 h-2 rounded-full bg-emerald-500";
+    }
+
+    // 사진 선택 이벤트 처리
+    imageInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const img = new Image();
+      img.onload = () => {
+        currentImage = img;
+        canvas.width = img.width;
+        canvas.height = img.height;
+        
+        if (placeholder) placeholder.style.display = 'none';
+
+        detectCDBarCircles();
+        
+        saveBtn.disabled = false;
+        resetBtn.disabled = false;
+      };
+      img.src = URL.createObjectURL(file);
+    });
+
+    // OpenCV Hough Circles 단면 자동 탐지
+    function detectCDBarCircles() {
+      if (!currentImage) return;
+
+      statusEl.innerText = "단면 탐지 중";
+      statusBadge.className = "inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-sky-50 text-sky-700 border border-sky-200";
+      statusDot.className = "w-2 h-2 rounded-full bg-sky-500 animate-ping";
+
+      if (cvReady && typeof cv !== 'undefined') {
+        setTimeout(() => {
+          try {
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = currentImage.width;
+            tempCanvas.height = currentImage.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(currentImage, 0, 0);
+
+            let src = cv.imread(tempCanvas);
+            let gray = new cv.Mat();
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+            let blurred = new cv.Mat();
+            let ksize = new cv.Size(5, 5);
+            cv.GaussianBlur(gray, blurred, ksize, 1.5, 1.5);
+
+            let circles = new cv.Mat();
+            const sens = parseInt(document.getElementById('sensitivity').value);
+            const minR = parseInt(document.getElementById('minRadius').value);
+            const maxR = Math.round(minR * 2.2);
+
+            cv.HoughCircles(blurred, circles, cv.HOUGH_GRADIENT, 1, minR * 1.4, 50, sens, minR, maxR);
+
+            detectedCircles = [];
+            for (let i = 0; i < circles.cols; ++i) {
+              let x = circles.data32F[i * 3];
+              let y = circles.data32F[i * 3 + 1];
+              let r = circles.data32F[i * 3 + 2];
+              detectedCircles.push({ x: x, y: y, r: r });
+            }
+
+            src.delete(); gray.delete(); blurred.delete(); circles.delete();
+
+            statusEl.innerText = "측정 완료";
+            statusBadge.className = "inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200";
+            statusDot.className = "w-2 h-2 rounded-full bg-emerald-500";
+            render();
+          } catch (err) {
+            console.error("OpenCV 연산 오류:", err);
+            fallbackDetection();
+          }
+        }, 50);
+      } else {
+        fallbackDetection();
+      }
+    }
+
+    function fallbackDetection() {
+      detectedCircles = [];
+      statusEl.innerText = "수동 터치 모드";
+      statusBadge.className = "inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200";
+      statusDot.className = "w-2 h-2 rounded-full bg-amber-500";
+      render();
+    }
+
+    function updateOptions() {
+      document.getElementById('sensVal').innerText = document.getElementById('sensitivity').value;
+      document.getElementById('radVal').innerText = document.getElementById('minRadius').value;
+      if (currentImage) {
+        detectCDBarCircles();
+      }
+    }
+
+    // 중량 산출 로직
+    function calculateWeight() {
+      const count = detectedCircles.length;
+      
+      const matSelect = document.getElementById('materialSelect');
+      let density = parseFloat(matSelect.value);
+      if (matSelect.value === 'custom') {
+        density = parseFloat(document.getElementById('customDensity').value) || 7.85;
+      }
+
+      const diaMm = parseFloat(document.getElementById('barDiameter').value) || 0;
+      const lengthM = parseFloat(document.getElementById('barLength').value) || 0;
+
+      if (diaMm <= 0 || lengthM <= 0 || count < 0) {
+        document.getElementById('unitWeightDisplay').innerText = "0.00 kg";
+        document.getElementById('totalWeightKgDisplay').innerText = "0.00 kg";
+        document.getElementById('totalWeightTonDisplay').innerText = "0.000 ton";
+        return;
+      }
+
+      // 1본당 중량(kg) = (PI / 4000) * d^2 * L * density
+      const unitWeightKg = (Math.PI / 4000) * Math.pow(diaMm, 2) * lengthM * density;
+      const totalWeightKg = unitWeightKg * count;
+      const totalWeightTon = totalWeightKg / 1000;
+
+      document.getElementById('unitWeightDisplay').innerText = `${unitWeightKg.toFixed(2)} kg`;
+      document.getElementById('totalWeightKgDisplay').innerText = `${totalWeightKg.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} kg`;
+      document.getElementById('totalWeightTonDisplay').innerText = `${totalWeightTon.toFixed(3)} ton`;
+    }
+
+    function onMaterialChange() {
+      const matSelect = document.getElementById('materialSelect');
+      const customBox = document.getElementById('customDensityBox');
+      if (matSelect.value === 'custom') {
+        customBox.style.display = 'flex';
+      } else {
+        customBox.style.display = 'none';
+      }
+      calculateWeight();
+    }
+
+    function setDiameter(val) {
+      document.getElementById('barDiameter').value = val;
+      calculateWeight();
+    }
+
+    function setBarLength(val) {
+      document.getElementById('barLength').value = val;
+      calculateWeight();
+    }
+
+    // Canvas 오버레이 렌더링 (깔끔한 네온 보더 및 명확한 넘버)
+    function render() {
+      if (!currentImage) return;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(currentImage, 0, 0);
+
+      const baseRadius = parseInt(document.getElementById('minRadius').value) || 12;
+
+      detectedCircles.forEach((pt, index) => {
+        const radius = pt.r || baseRadius;
+
+        // Clean Circle Stroke & Fill
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, radius, 0, 2 * Math.PI);
+        ctx.lineWidth = Math.max(2, Math.round(canvas.width / 500));
+        ctx.strokeStyle = '#0284c7'; // Sky blue border
+        ctx.fillStyle = 'rgba(2, 132, 199, 0.35)';
+        ctx.fill();
+        ctx.stroke();
+
+        // Index Badge text
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = `bold ${Math.max(10, Math.round(radius * 0.95))}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(index + 1, pt.x, pt.y);
+      });
+
+      countDisplay.innerText = detectedCircles.length;
+      calculateWeight();
+    }
+
+    // 터치 오버레이 추가 / 삭제 수동 편집
+    canvas.addEventListener('pointerdown', (e) => {
+      if (!currentImage) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+
+      const clickX = (e.clientX - rect.left) * scaleX;
+      const clickY = (e.clientY - rect.top) * scaleY;
+
+      const currentRadius = parseInt(document.getElementById('minRadius').value) || 12;
+
+      const existingIndex = detectedCircles.findIndex(pt => {
+        const dist = Math.hypot(pt.x - clickX, pt.y - clickY);
+        return dist < (pt.r || currentRadius) * 1.3;
+      });
+
+      if (existingIndex !== -1) {
+        detectedCircles.splice(existingIndex, 1);
+      } else {
+        detectedCircles.push({ x: clickX, y: clickY, r: currentRadius });
+      }
+
+      render();
+    });
+
+    // 결과 저장
+    saveBtn.addEventListener('click', () => {
+      if (!currentImage) return;
+
+      const dataURL = canvas.toDataURL('image/png', 1.0);
+      const link = document.createElement('a');
+      link.href = dataURL;
+
+      const now = new Date();
+      const timeStr = `${now.getFullYear()}${(now.getMonth()+1).toString().padStart(2,'0')}${now.getDate().toString().padStart(2,'0')}_${now.getHours().toString().padStart(2,'0')}${now.getMinutes().toString().padStart(2,'0')}`;
+      link.download = `cdbar_count_${timeStr}.png`;
+
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      showToast('갤러리에 결과 사진이 저장되었습니다.');
+    });
+
+    // Reset
+    resetBtn.addEventListener('click', () => {
+      detectedCircles = [];
+      render();
+      showToast('측정 수량이 초기화되었습니다.', false);
+    });
+  </script>
+</body>
+</html>
