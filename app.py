@@ -5,15 +5,100 @@ import streamlit as st
 from streamlit_image_coordinates import streamlit_image_coordinates
 from ultralytics import YOLO
 
-# 1. 웹 페이지 기본 설정
-st.set_page_config(page_title="CD-BAR 단면 카운터 & 중량 계산기", layout="centered")
-st.title("🔩 CD-BAR 단면 카운터 & 중량 자동 계산기")
-st.write(
-    "AI 자동 감지 및 스마트 클릭 보정(추가/삭제) 후, **선경과 길이에 따른 총 중량까지 실시간 산출**합니다."
+# -----------------------------------------------------------------------------
+# 1. 페이지 기본 설정 및 커스텀 CSS 스타일 적용
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="CD-BAR 스마트 카운팅 & 중량 분석 시스템",
+    page_icon="🔩",
+    layout="wide",
+)
+
+# 대시보드 디자인 커스텀 CSS
+st.markdown(
+    """
+    <style>
+    .main {
+        background-color: #f8fafc;
+    }
+    
+    .header-card {
+        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        color: #ffffff;
+        padding: 24px;
+        border-radius: 16px;
+        margin-bottom: 20px;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    }
+    .header-card h1 {
+        color: #ffffff !important;
+        font-size: 1.8rem !important;
+        font-weight: 800 !important;
+        margin-bottom: 6px !important;
+    }
+    .header-card p {
+        color: #94a3b8 !important;
+        font-size: 0.95rem !important;
+        margin-bottom: 0 !important;
+    }
+
+    .metric-container {
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 16px;
+        text-align: center;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+    .metric-title {
+        font-size: 0.85rem;
+        color: #64748b;
+        font-weight: 600;
+        margin-bottom: 4px;
+    }
+    .metric-val-main {
+        font-size: 1.7rem;
+        font-weight: 800;
+        color: #0f172a;
+    }
+    .metric-sub {
+        font-size: 0.8rem;
+        color: #10b981;
+        font-weight: 600;
+        margin-top: 4px;
+    }
+
+    .guide-box {
+        background-color: #f0f9ff;
+        border-left: 4px solid #0284c7;
+        padding: 12px 16px;
+        border-radius: 6px;
+        font-size: 0.9rem;
+        color: #0369a1;
+        margin-bottom: 16px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# -----------------------------------------------------------------------------
+# 2. 헤더 섹션
+# -----------------------------------------------------------------------------
+st.markdown(
+    """
+    <div class="header-card">
+        <h1>🔩 CD-BAR 스마트 카운팅 & 중량 산출 시스템</h1>
+        <p>다중 이미지 일괄 분석 · 클릭 수동 보정 · 제조번호 기반 통합 검수 보고서 제공</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 
-# 2. AI 모델(best.pt) 로드
+# -----------------------------------------------------------------------------
+# 3. AI 모델 로드
+# -----------------------------------------------------------------------------
 @st.cache_resource
 def load_model():
     return YOLO("best.pt")
@@ -21,172 +106,296 @@ def load_model():
 
 try:
     model = load_model()
-except Exception as e:
+except Exception:
     st.error(
-        "❌ 'best.pt' 모델을 불러올 수 없습니다. GitHub 저장소를 확인해주세요."
+        "❌ 'best.pt' 모델을 불러올 수 없습니다. GitHub 저장소에 모델 파일이 등록되어 있는지 확인해 주세요."
     )
     st.stop()
 
-# 3. 사이드바 - AI 설정 및 중량 규격 입력
-st.sidebar.header("⚙️ AI 탐지 설정")
-conf_thresh = st.sidebar.slider(
-    "AI 탐지 민감도", min_value=0.05, max_value=0.70, value=0.20, step=0.05
-)
-tolerance = (
-    st.sidebar.slider("단면 크기 허용 오차 (%)", 10, 50, 35, 5) / 100.0
-)
+# -----------------------------------------------------------------------------
+# 4. 사이드바 - 설정 및 제조번호 입력 구역
+# -----------------------------------------------------------------------------
+with st.sidebar:
+    st.title("⚙️ 시스템 설정")
 
-st.sidebar.markdown("---")
-st.sidebar.header("📏 CD-BAR 규격 및 중량 설정")
-bar_diameter = st.sidebar.number_input(
-    "선경 (지름, mm)", min_value=1.0, max_value=200.0, value=12.0, step=0.5
-)
-bar_length = st.sidebar.number_input(
-    "제품 길이 (L, m)", min_value=0.1, max_value=20.0, value=6.0, step=0.1
-)
-steel_density = st.sidebar.number_input(
-    "철 비중 (g/cm³)", min_value=7.0, max_value=9.0, value=7.85, step=0.01
-)
+    # 제조번호 입력 칸 추가
+    lot_number = st.text_input(
+        "🏷️ 제조번호 (Lot No.)",
+        value="P265MD123-01-10",
+        help="검수 보고서 및 대시보드 표기용 제조번호입니다.",
+    )
 
-# 세션 상태 변수 초기화
-if "image_id" not in st.session_state:
-    st.session_state.image_id = None
-if "active_centers" not in st.session_state:
-    st.session_state.active_centers = []
-if "target_radius" not in st.session_state:
-    st.session_state.target_radius = 12
-if "last_clicked" not in st.session_state:
-    st.session_state.last_clicked = None
+    st.markdown("---")
+    st.subheader("🎯 AI 탐지 제어")
+    conf_thresh = st.slider(
+        "탐지 민감도 (Confidence)",
+        min_value=0.05,
+        max_value=0.70,
+        value=0.20,
+        step=0.05,
+    )
+    tolerance = (
+        st.slider(
+            "선경 오차 허용 범위 (%)",
+            min_value=10,
+            max_value=50,
+            value=35,
+            step=5,
+        )
+        / 100.0
+    )
 
-# 이미지 업로드 UI
-uploaded_file = st.file_uploader(
-    "CD-BAR 촬영 사진을 업로드하세요", type=["jpg", "jpeg", "png"]
-)
+    st.markdown("---")
+    st.subheader("📏 제품 규격 및 중량 설정")
+    bar_diameter = st.number_input(
+        "선경 (지름, mm)",
+        min_value=1.0,
+        max_value=200.0,
+        value=12.0,
+        step=0.5,
+    )
+    bar_length_mm = st.number_input(
+        "제품 길이 (L, mm)",
+        min_value=100,
+        max_value=30000,
+        value=6000,
+        step=1,
+        help="1mm 단위 입력 가능 (예: 6,000 mm)",
+    )
+    steel_density = st.number_input(
+        "철 비중 (g/cm³)",
+        min_value=7.0,
+        max_value=9.0,
+        value=7.85,
+        step=0.01,
+    )
 
-if uploaded_file is not None:
-    current_id = f"{uploaded_file.name}_{uploaded_file.size}"
-
-    # 사진이 새로 올라오면 최초 1회 AI 탐지 실행
-    if st.session_state.image_id != current_id:
-        st.session_state.image_id = current_id
-        st.session_state.last_clicked = None
-
-        image = Image.open(uploaded_file).convert("RGB")
-        results = model(image, conf=conf_thresh)
-        boxes = results[0].boxes
-
-        ai_centers = []
-        target_radius = 12
-
-        if len(boxes) > 0:
-            xyxy = boxes.xyxy.cpu().numpy()
-            widths = xyxy[:, 2] - xyxy[:, 0]
-            heights = xyxy[:, 3] - xyxy[:, 1]
-
-            median_w = np.median(widths)
-            median_h = np.median(heights)
-            target_radius = max(3, int((median_w + median_h) / 4))
-
-            for box, w, h in zip(xyxy, widths, heights):
-                if (
-                    (1.0 - tolerance) * median_w
-                    <= w
-                    <= (1.0 + tolerance) * median_w
-                ) and (
-                    (1.0 - tolerance) * median_h
-                    <= h
-                    <= (1.0 + tolerance) * median_h
-                ):
-                    cx = int((box[0] + box[2]) / 2)
-                    cy = int((box[1] + box[3]) / 2)
-                    ai_centers.append((cx, cy, True))
-
-        st.session_state.active_centers = ai_centers
-        st.session_state.target_radius = target_radius
-
-    image = Image.open(uploaded_file).convert("RGB")
-    target_radius = st.session_state.target_radius
-
-    # 리셋 버튼
-    if st.sidebar.button("🧹 AI 감지 원본 상태로 리셋"):
-        st.session_state.image_id = None
+    st.markdown("---")
+    if st.button("🧹 전체 사진 분석 데이터 초기화", use_container_width=True):
+        st.session_state.image_data = {}
         st.rerun()
 
-    # 이미지에 원 표시
+# 세션 상태 변수 초기화 (다중 이미지 관리용)
+if "image_data" not in st.session_state:
+    st.session_state.image_data = {}
+
+# -----------------------------------------------------------------------------
+# 5. 다중 이미지 업로드 & 연산 프로세스
+# -----------------------------------------------------------------------------
+uploaded_files = st.file_uploader(
+    "CD-BAR 단면 촬영 사진을 1장 이상 업로드하세요 (JPG, PNG 지원 / 여러 장 선택 가능)",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True,  # 여러 장 업로드 허용
+)
+
+if uploaded_files:
+    # 새로 들어온 이미지 AI 최초 분석
+    for file in uploaded_files:
+        img_id = f"{file.name}_{file.size}"
+        if img_id not in st.session_state.image_data:
+            image = Image.open(file).convert("RGB")
+            results = model(image, conf=conf_thresh)
+            boxes = results[0].boxes
+
+            ai_centers = []
+            target_radius = 12
+
+            if len(boxes) > 0:
+                xyxy = boxes.xyxy.cpu().numpy()
+                widths = xyxy[:, 2] - xyxy[:, 0]
+                heights = xyxy[:, 3] - xyxy[:, 1]
+
+                median_w = np.median(widths)
+                median_h = np.median(heights)
+                target_radius = max(3, int((median_w + median_h) / 4))
+
+                for box, w, h in zip(xyxy, widths, heights):
+                    if (
+                        (1.0 - tolerance) * median_w
+                        <= w
+                        <= (1.0 + tolerance) * median_w
+                    ) and (
+                        (1.0 - tolerance) * median_h
+                        <= h
+                        <= (1.0 + tolerance) * median_h
+                    ):
+                        cx = int((box[0] + box[2]) / 2)
+                        cy = int((box[1] + box[3]) / 2)
+                        ai_centers.append((cx, cy, True))
+
+            st.session_state.image_data[img_id] = {
+                "file": file,
+                "centers": ai_centers,
+                "radius": target_radius,
+                "last_clicked": None,
+            }
+
+    # 전체 수량 및 중량 종합 집계
+    grand_total_count = sum(
+        len(data["centers"]) for data in st.session_state.image_data.values()
+    )
+
+    radius_cm = (bar_diameter / 10.0) / 2.0
+    area_cm2 = math.pi * (radius_cm**2)
+    length_cm = bar_length_mm / 10.0
+    volume_cm3 = area_cm2 * length_cm
+    unit_weight_kg = (volume_cm3 * steel_density) / 1000.0
+
+    grand_total_weight_kg = unit_weight_kg * grand_total_count
+    grand_total_weight_ton = grand_total_weight_kg / 1000.0
+    bar_length_m = bar_length_mm / 1000.0
+
+    # -----------------------------------------------------------------------------
+    # 6. 상단 종합 대시보드 지표
+    # -----------------------------------------------------------------------------
+    m1, m2, m3, m4, m5 = st.columns(5)
+
+    with m1:
+        st.markdown(
+            f"""
+            <div class="metric-container">
+                <div class="metric-title">제조번호 (Lot No.)</div>
+                <div class="metric-val-main" style="font-size: 1.1rem; padding-top: 8px;">{lot_number}</div>
+                <div class="metric-sub">검수 대상 번호</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with m2:
+        st.markdown(
+            f"""
+            <div class="metric-container">
+                <div class="metric-title">총 검수 수량 (합계)</div>
+                <div class="metric-val-main">{grand_total_count} <span style="font-size:1rem;">개</span></div>
+                <div class="metric-sub">총 {len(uploaded_files)}장 분석 결과</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with m3:
+        st.markdown(
+            f"""
+            <div class="metric-container">
+                <div class="metric-title">총 중량 (합계)</div>
+                <div class="metric-val-main">{grand_total_weight_kg:,.1f} <span style="font-size:1rem;">kg</span></div>
+                <div class="metric-sub">{grand_total_weight_ton:.3f} Ton</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with m4:
+        st.markdown(
+            f"""
+            <div class="metric-container">
+                <div class="metric-title">1본당 단위 중량</div>
+                <div class="metric-val-main">{unit_weight_kg:.2f} <span style="font-size:1rem;">kg</span></div>
+                <div class="metric-sub">비중 {steel_density} 기준</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with m5:
+        st.markdown(
+            f"""
+            <div class="metric-container">
+                <div class="metric-title">설정 제품 규격</div>
+                <div class="metric-val-main">Ø{bar_diameter:.1f}</div>
+                <div class="metric-sub">{bar_length_mm:,} mm</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # -----------------------------------------------------------------------------
+    # 7. 개별 사진 선택 및 수동 클릭 보정 구역
+    # -----------------------------------------------------------------------------
+    selected_file = st.selectbox(
+        "📸 검수 및 수동 클릭 보정을 진행할 사진을 선택하세요:",
+        uploaded_files,
+        format_func=lambda x: f"📷 {x.name} (현재 카운트: {len(st.session_state.image_data[f'{x.name}_{x.size}']['centers'])}개)",
+    )
+
+    current_id = f"{selected_file.name}_{selected_file.size}"
+    active_data = st.session_state.image_data[current_id]
+
+    st.markdown(
+        """
+        <div class="guide-box">
+            👉 <b>터치/클릭 수동 보정 가이드:</b><br>
+            • <b>[기존 원 클릭]</b> : 잘못 인식된 원을 즉시 삭제합니다. ❌<br>
+            • <b>[빈 공간 클릭]</b> : 누락된 단면에 수동 원(노란색)을 새롭게 추가합니다. 🟡
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    image = Image.open(selected_file).convert("RGB")
+    target_radius = active_data["radius"]
+
+    # 오버레이 이미지 생성
     output_img = image.copy()
     draw = ImageDraw.Draw(output_img)
 
-    for cx, cy, is_ai in st.session_state.active_centers:
+    for cx, cy, is_ai in active_data["centers"]:
         x0, y0 = cx - target_radius, cy - target_radius
         x1, y1 = cx + target_radius, cy + target_radius
 
         if is_ai:
-            draw.ellipse([x0, y0, x1, y1], outline="lime", width=3)
-            draw.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], fill="red")
+            draw.ellipse([x0, y0, x1, y1], outline="#00FF66", width=3)
+            draw.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], fill="#FF0033")
         else:
-            draw.ellipse([x0, y0, x1, y1], outline="yellow", width=3)
-            draw.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], fill="blue")
+            draw.ellipse([x0, y0, x1, y1], outline="#FFCC00", width=3)
+            draw.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], fill="#0066FF")
 
-    st.subheader("💡 클릭 인터랙티브 보정 모드")
-    st.caption(
-        "🟢 **녹색**: AI 탐지 | 🟡 **노란색**: 수동 추가 | **[원 클릭 = 삭제 ❌]** / **[빈 곳 클릭 = 추가 ➕]**"
+    # 마우스 클릭 인터랙션
+    value = streamlit_image_coordinates(
+        output_img, key=f"canvas_{current_id}"
     )
 
-    # 클릭 인터랙션
-    value = streamlit_image_coordinates(output_img, key="interactive_img")
-
-    if value is not None and value != st.session_state.last_clicked:
-        st.session_state.last_clicked = value
+    if value is not None and value != active_data["last_clicked"]:
+        active_data["last_clicked"] = value
         click_x, click_y = value["x"], value["y"]
 
         hit_index = None
         threshold_dist = max(target_radius, 12)
 
-        for idx, (cx, cy, is_ai) in enumerate(st.session_state.active_centers):
+        for idx, (cx, cy, is_ai) in enumerate(active_data["centers"]):
             dist = math.hypot(cx - click_x, cy - click_y)
             if dist <= threshold_dist:
                 hit_index = idx
                 break
 
         if hit_index is not None:
-            st.session_state.active_centers.pop(hit_index)
+            active_data["centers"].pop(hit_index)
         else:
-            st.session_state.active_centers.append((click_x, click_y, False))
+            active_data["centers"].append((click_x, click_y, False))
 
         st.rerun()
 
-    # 4. 수량 및 중량 수식 계산
-    total_count = len(st.session_state.active_centers)
-    ai_count = sum(1 for item in st.session_state.active_centers if item[2])
-    manual_count = sum(
-        1 for item in st.session_state.active_centers if not item[2]
-    )
+    # -----------------------------------------------------------------------------
+    # 8. 종합 검수 명세표
+    # -----------------------------------------------------------------------------
+    with st.expander("📋 제조번호별 사진별 상세 측정 명세표 보기", expanded=True):
+        spec_table = f"""
+        | 사진 파일명 | 측정 수량 | 예상 중량 (kg) | 비고 |
+        | :--- | :--- | :--- | :--- |
+        """
+        for img_key, data in st.session_state.image_data.items():
+            cnt = len(data["centers"])
+            wt = cnt * unit_weight_kg
+            fname = data["file"].name
+            spec_table += f"| **{fname}** | {cnt} EA | {wt:,.1f} kg | 사진 개별 산출 | \n"
 
-    # 1본당 중량(kg) = 단면적(cm²) × 길이(cm) × 비중(g/cm³) / 1000
-    radius_cm = (bar_diameter / 10.0) / 2.0
-    area_cm2 = math.pi * (radius_cm**2)
-    length_cm = bar_length * 100.0
-    volume_cm3 = area_cm2 * length_cm
-    unit_weight_kg = (volume_cm3 * steel_density) / 1000.0
+        spec_table += f"""
+        | **[합계 / Lot: {lot_number}]** | **{grand_total_count} EA** | **{grand_total_weight_kg:,.2f} kg ({grand_total_weight_ton:.3f} Ton)** | **총 {len(uploaded_files)}장 통합** |
+        """
+        st.markdown(spec_table)
 
-    total_weight_kg = unit_weight_kg * total_count
-    total_weight_ton = total_weight_kg / 1000.0
-
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric(
-            label="🎉 측정 CD-BAR 총 수량",
-            value=f"{total_count} 개",
-            delta=f"AI: {ai_count}개 | 수동: {manual_count}개",
-        )
-    with col2:
-        st.metric(
-            label="⚖️ 예상 총 중량",
-            value=f"{total_weight_kg:,.1f} kg",
-            delta=f"({total_weight_ton:.3f} Ton)",
-        )
-
-    st.info(
-        f"📊 **적용 규격**: 선경 `{bar_diameter} mm` × 길이 `{bar_length} m` | **1본당 단중**: `{unit_weight_kg:.2f} kg` (비중 `{steel_density} g/cm³` 기준)"
-    )
+else:
+    st.info("👆 상단의 업로드 창을 통해 CD-BAR 단면 사진(1장 이상)을 등록해 주세요.")
