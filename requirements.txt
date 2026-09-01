@@ -1,6 +1,5 @@
 streamlit
-opencv-python-headless
 ultralytics
+streamlit-image-coordinates
 pillow
 numpy
-streamlit-image-coordinates
