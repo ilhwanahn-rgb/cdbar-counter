@@ -1,5 +1,4 @@
 import math
-import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 import streamlit as st
@@ -7,7 +6,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 from ultralytics import YOLO
 
 # -----------------------------------------------------------------------------
-# 1. 페이지 기본 설정 및 커스텀 CSS 스타일 적용 (폰트 +5pt 유지)
+# 1. 페이지 기본 설정 및 커스텀 CSS 스타일 적용 (폰트 +5pt)
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="CD-BAR 스마트 카운팅 & 중량 분석 시스템",
@@ -108,7 +107,7 @@ st.markdown(
     """
     <div class="header-card">
         <h1>🔩 CD-BAR 스마트 카운팅 & 중량 산출 시스템</h1>
-        <p>CLAHE 그림자 보정 · 1024px 고해상도 스캔 · 이중 인식 중복 제거 엔진 적용</p>
+        <p>메인 묶음 공간 군집(Cluster) 자동 추출 · 하단 타 묶음 제외 · 이중 인식 중복 제거 엔진</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -143,14 +142,12 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🎯 AI 탐지 및 묶음 제어")
-    # 어두운 단면 감지를 위해 민감도 기본값을 0.10으로 하향 조정
     conf_thresh = st.slider(
         "탐지 민감도 (Confidence)",
         min_value=0.03,
         max_value=0.70,
-        value=0.10,
+        value=0.15,
         step=0.01,
-        help="어두운 그림자 영역 단면을 잡으려면 값을 낮춰주세요 (추천: 0.08~0.12)",
     )
     tolerance = st.slider(
         "메인 묶음 선경 오차 범위 (%)",
@@ -207,22 +204,13 @@ if uploaded_files:
         if img_id not in st.session_state.image_data:
             image = Image.open(file).convert("RGB")
 
-            # 리사이징 (최대 1200px)
+            # 화면 최적화 리사이징 (최대 1200px)
             max_size = 1200
             if max(image.width, image.height) > max_size:
                 image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
 
-            # [핵심 1] 적응형 히스토그램 평굴화(CLAHE)로 어두운 그림자 영역 명암 자동 보정
-            img_np = np.array(image)
-            lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
-            l, a, b = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-            cl = clahe.apply(l)
-            limg = cv2.merge((cl, a, b))
-            enhanced_img = cv2.cvtColor(limg, cv2.COLOR_LAB2RGB)
-
-            # [핵심 2] imgsz=1024 고해상도 추론 적용 (작은 단면 픽셀 보존)
-            results = model(enhanced_img, conf=conf_thresh, imgsz=1024)
+            # 명암 보정(CLAHE) 제거 후 원본 그대로 고해상도(1024px) 추론
+            results = model(image, conf=conf_thresh, imgsz=1024)
             boxes = results[0].boxes
 
             raw_ai_centers = []
@@ -237,6 +225,7 @@ if uploaded_files:
                 median_h = np.median(heights)
                 target_radius = max(3, int((median_w + median_h) / 4))
 
+                # 1단계: 선경 규격 필터링
                 for box, w, h in zip(xyxy, widths, heights):
                     if (1.0 - tolerance) * median_w <= w <= (1.0 + tolerance) * median_w and \
                        (1.0 - tolerance) * median_h <= h <= (1.0 + tolerance) * median_h:
@@ -244,21 +233,63 @@ if uploaded_files:
                         cy = int((box[1] + box[3]) / 2)
                         raw_ai_centers.append((cx, cy))
 
-                # 이중 인식 중복 제거
+                # 2단계: 이중 원 중복 제거
                 clean_ai_centers = []
                 for cx, cy in raw_ai_centers:
                     is_duplicate = False
-                    for kx, ky, _ in clean_ai_centers:
+                    for kx, ky in clean_ai_centers:
                         if math.hypot(cx - kx, cy - ky) < (target_radius * 0.75):
                             is_duplicate = True
                             break
                     if not is_duplicate:
-                        clean_ai_centers.append((cx, cy, True))
+                        clean_ai_centers.append((cx, cy))
+
+                # 3단계: [핵심] 공간 연결 군집(Cluster) 분석을 통해 하단/외곽의 다른 묶음 자동 제거
+                if len(clean_ai_centers) > 0:
+                    max_connect_dist = target_radius * 3.3  # 인접 단면 허용 거리
+                    n = len(clean_ai_centers)
+                    adj = [[] for _ in range(n)]
+
+                    for i in range(n):
+                        for j in range(i + 1, n):
+                            d = math.hypot(clean_ai_centers[i][0] - clean_ai_centers[j][0], 
+                                           clean_ai_centers[i][1] - clean_ai_centers[j][1])
+                            if d <= max_connect_dist:
+                                adj[i].append(j)
+                                adj[j].append(i)
+
+                    visited = [False] * n
+                    components = []
+
+                    for i in range(n):
+                        if not visited[i]:
+                            comp = []
+                            queue = [i]
+                            visited[i] = True
+                            while queue:
+                                curr = queue.pop(0)
+                                comp.append(curr)
+                                for neighbor in adj[curr]:
+                                    if not visited[neighbor]:
+                                        visited[neighbor] = True
+                                        queue.append(neighbor)
+                            components.append(comp)
+
+                    # 가장 단면 개수가 많은 메인 묶음 군집만 최종 유지
+                    if components:
+                        largest_comp = max(components, key=len)
+                        final_ai_centers = [(clean_ai_centers[idx][0], clean_ai_centers[idx][1], True) for idx in largest_comp]
+                    else:
+                        final_ai_centers = [(cx, cy, True) for cx, cy in clean_ai_centers]
+                else:
+                    final_ai_centers = []
+            else:
+                final_ai_centers = []
 
             st.session_state.image_data[img_id] = {
                 "file": file,
                 "image": image,
-                "centers": clean_ai_centers,
+                "centers": final_ai_centers,
                 "radius": target_radius,
                 "last_clicked": None,
             }
@@ -358,7 +389,7 @@ if uploaded_files:
         <div class="guide-box">
             👉 <b>터치/클릭 수동 보정 가이드:</b><br>
             • <b>[기존 원 클릭]</b> : 잘못 인식된 원을 즉시 삭제합니다. ❌<br>
-            • <b>[빈 공간 클릭]</b> : 누락된 어두운 단면에 수동 원(노란색)을 새롭게 추가합니다. 🟡
+            • <b>[빈 공간 클릭]</b> : 누락된 메인 묶음 단면에 수동 원(노란색)을 새롭게 추가합니다. 🟡
         </div>
         """,
         unsafe_allow_html=True,
