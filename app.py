@@ -1,4 +1,5 @@
 import math
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 import streamlit as st
@@ -6,7 +7,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 from ultralytics import YOLO
 
 # -----------------------------------------------------------------------------
-# 1. 페이지 기본 설정 및 커스텀 CSS 스타일 적용
+# 1. 페이지 기본 설정 및 커스텀 CSS 스타일 적용 (폰트 +5pt 유지)
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="CD-BAR 스마트 카운팅 & 중량 분석 시스템",
@@ -21,23 +22,27 @@ st.markdown(
         background-color: #f8fafc;
     }
     
+    html, body, p, span, label, div, .stMarkdown {
+        font-size: 1.15rem !important;
+    }
+    
     .header-card {
         background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
         color: #ffffff;
-        padding: 24px;
+        padding: 28px;
         border-radius: 16px;
         margin-bottom: 20px;
         box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
     }
     .header-card h1 {
         color: #ffffff !important;
-        font-size: 1.8rem !important;
+        font-size: 2.3rem !important;
         font-weight: 800 !important;
-        margin-bottom: 6px !important;
+        margin-bottom: 8px !important;
     }
     .header-card p {
         color: #94a3b8 !important;
-        font-size: 0.95rem !important;
+        font-size: 1.25rem !important;
         margin-bottom: 0 !important;
     }
 
@@ -45,38 +50,48 @@ st.markdown(
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
         border-radius: 12px;
-        padding: 16px;
+        padding: 18px;
         text-align: center;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
     }
     .metric-title {
-        font-size: 0.85rem;
+        font-size: 1.15rem !important;
         color: #64748b;
-        font-weight: 600;
-        margin-bottom: 4px;
+        font-weight: 700;
+        margin-bottom: 6px;
     }
     .metric-val-main {
-        font-size: 1.6rem;
+        font-size: 2.1rem !important;
         font-weight: 800;
         color: #0f172a;
     }
     .metric-sub {
-        font-size: 0.8rem;
+        font-size: 1.1rem !important;
         color: #10b981;
-        font-weight: 600;
-        margin-top: 4px;
+        font-weight: 700;
+        margin-top: 6px;
     }
 
     .guide-box {
         background-color: #f0f9ff;
-        border-left: 4px solid #0284c7;
-        padding: 12px 16px;
-        border-radius: 6px;
-        font-size: 0.9rem;
+        border-left: 5px solid #0284c7;
+        padding: 16px 20px;
+        border-radius: 8px;
+        font-size: 1.2rem !important;
         color: #0369a1;
-        margin-bottom: 16px;
+        margin-bottom: 20px;
+        line-height: 1.6;
     }
     
+    table, th, td {
+        font-size: 1.15rem !important;
+        padding: 12px !important;
+    }
+    
+    .stSidebar label, .stSidebar p, .stSidebar div {
+        font-size: 1.1rem !important;
+    }
+
     .stImageCoordinates {
         display: flex;
         justify-content: center;
@@ -93,7 +108,7 @@ st.markdown(
     """
     <div class="header-card">
         <h1>🔩 CD-BAR 스마트 카운팅 & 중량 산출 시스템</h1>
-        <p>메인 묶음 선경 정규화 · 이중 인식 중복 제거 · 다중 이미지 통합 검수 보고서</p>
+        <p>CLAHE 그림자 보정 · 1024px 고해상도 스캔 · 이중 인식 중복 제거 엔진 적용</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -128,20 +143,21 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🎯 AI 탐지 및 묶음 제어")
+    # 어두운 단면 감지를 위해 민감도 기본값을 0.10으로 하향 조정
     conf_thresh = st.slider(
         "탐지 민감도 (Confidence)",
-        min_value=0.05,
+        min_value=0.03,
         max_value=0.70,
-        value=0.20,
-        step=0.05,
+        value=0.10,
+        step=0.01,
+        help="어두운 그림자 영역 단면을 잡으려면 값을 낮춰주세요 (추천: 0.08~0.12)",
     )
     tolerance = st.slider(
         "메인 묶음 선경 오차 범위 (%)",
         min_value=10,
-        max_value=50,
-        value=25,
+        max_value=60,
+        value=35,
         step=5,
-        help="메인 묶음 대표 선경 대비 크기가 다른 소형/대형 바(하단 다른 묶음 등)를 자동 제외합니다.",
     ) / 100.0
 
     st.markdown("---")
@@ -191,12 +207,22 @@ if uploaded_files:
         if img_id not in st.session_state.image_data:
             image = Image.open(file).convert("RGB")
 
-            # 리사이징
+            # 리사이징 (최대 1200px)
             max_size = 1200
             if max(image.width, image.height) > max_size:
                 image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
 
-            results = model(image, conf=conf_thresh)
+            # [핵심 1] 적응형 히스토그램 평굴화(CLAHE)로 어두운 그림자 영역 명암 자동 보정
+            img_np = np.array(image)
+            lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+            cl = clahe.apply(l)
+            limg = cv2.merge((cl, a, b))
+            enhanced_img = cv2.cvtColor(limg, cv2.COLOR_LAB2RGB)
+
+            # [핵심 2] imgsz=1024 고해상도 추론 적용 (작은 단면 픽셀 보존)
+            results = model(enhanced_img, conf=conf_thresh, imgsz=1024)
             boxes = results[0].boxes
 
             raw_ai_centers = []
@@ -207,12 +233,10 @@ if uploaded_files:
                 widths = xyxy[:, 2] - xyxy[:, 0]
                 heights = xyxy[:, 3] - xyxy[:, 1]
 
-                # 가장 많은 비중을 차지하는 메인 묶음의 대표 크기(중앙값) 산출
                 median_w = np.median(widths)
                 median_h = np.median(heights)
                 target_radius = max(3, int((median_w + median_h) / 4))
 
-                # 1단계: 대표 선경 범위를 벗어나는 바(하단 다른 소형 묶음 등) 필터링
                 for box, w, h in zip(xyxy, widths, heights):
                     if (1.0 - tolerance) * median_w <= w <= (1.0 + tolerance) * median_w and \
                        (1.0 - tolerance) * median_h <= h <= (1.0 + tolerance) * median_h:
@@ -220,13 +244,12 @@ if uploaded_files:
                         cy = int((box[1] + box[3]) / 2)
                         raw_ai_centers.append((cx, cy))
 
-                # 2단계: 중심점 거리 기반 중복 제거 (이중 초록원 오류 해결)
-                # 두 중심점 사이 거리가 반지름의 70% 이내면 동일 객체로 판단해 1개만 유지
+                # 이중 인식 중복 제거
                 clean_ai_centers = []
                 for cx, cy in raw_ai_centers:
                     is_duplicate = False
                     for kx, ky, _ in clean_ai_centers:
-                        if math.hypot(cx - kx, cy - ky) < (target_radius * 0.7):
+                        if math.hypot(cx - kx, cy - ky) < (target_radius * 0.75):
                             is_duplicate = True
                             break
                     if not is_duplicate:
@@ -240,7 +263,6 @@ if uploaded_files:
                 "last_clicked": None,
             }
 
-    # 전체 수량 및 중량 종합 집계
     grand_total_count = sum(len(data["centers"]) for data in st.session_state.image_data.values())
 
     radius_cm = (bar_diameter / 10.0) / 2.0
@@ -262,7 +284,7 @@ if uploaded_files:
             f"""
             <div class="metric-container">
                 <div class="metric-title">제조번호 (Lot No.)</div>
-                <div class="metric-val-main" style="font-size: 1.1rem; padding-top: 8px; color: #0284c7;">{lot_number}</div>
+                <div class="metric-val-main" style="font-size: 1.4rem !important; padding-top: 6px; color: #0284c7;">{lot_number}</div>
                 <div class="metric-sub">검수 대상 번호</div>
             </div>
             """,
@@ -274,7 +296,7 @@ if uploaded_files:
             f"""
             <div class="metric-container">
                 <div class="metric-title">총 검수 수량 (합계)</div>
-                <div class="metric-val-main">{grand_total_count} <span style="font-size:1rem;">개</span></div>
+                <div class="metric-val-main">{grand_total_count} <span style="font-size:1.2rem;">개</span></div>
                 <div class="metric-sub">총 {len(uploaded_files)}장 메인 묶음 합계</div>
             </div>
             """,
@@ -286,7 +308,7 @@ if uploaded_files:
             f"""
             <div class="metric-container">
                 <div class="metric-title">총 중량 (합계)</div>
-                <div class="metric-val-main">{grand_total_weight_kg:,.1f} <span style="font-size:1rem;">kg</span></div>
+                <div class="metric-val-main">{grand_total_weight_kg:,.1f} <span style="font-size:1.2rem;">kg</span></div>
                 <div class="metric-sub">{grand_total_weight_ton:.3f} Ton</div>
             </div>
             """,
@@ -298,7 +320,7 @@ if uploaded_files:
             f"""
             <div class="metric-container">
                 <div class="metric-title">1본당 단위 중량</div>
-                <div class="metric-val-main">{unit_weight_kg:.2f} <span style="font-size:1rem;">kg</span></div>
+                <div class="metric-val-main">{unit_weight_kg:.2f} <span style="font-size:1.2rem;">kg</span></div>
                 <div class="metric-sub">비중 {steel_density} 기준</div>
             </div>
             """,
@@ -335,8 +357,8 @@ if uploaded_files:
         """
         <div class="guide-box">
             👉 <b>터치/클릭 수동 보정 가이드:</b><br>
-            • <b>[기존 원 클릭]</b> : 잘못 인식된 이중 원 및 오탐지를 즉시 삭제합니다. ❌<br>
-            • <b>[빈 공간 클릭]</b> : 누락된 단면에 수동 원(노란색)을 새롭게 추가합니다. 🟡
+            • <b>[기존 원 클릭]</b> : 잘못 인식된 원을 즉시 삭제합니다. ❌<br>
+            • <b>[빈 공간 클릭]</b> : 누락된 어두운 단면에 수동 원(노란색)을 새롭게 추가합니다. 🟡
         </div>
         """,
         unsafe_allow_html=True,
