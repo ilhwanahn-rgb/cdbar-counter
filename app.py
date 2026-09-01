@@ -57,7 +57,7 @@ st.markdown(
         margin-bottom: 4px;
     }
     .metric-val-main {
-        font-size: 1.7rem;
+        font-size: 1.6rem;
         font-weight: 800;
         color: #0f172a;
     }
@@ -76,6 +76,12 @@ st.markdown(
         font-size: 0.9rem;
         color: #0369a1;
         margin-bottom: 16px;
+    }
+    
+    /* 이미지 캔버스 중앙 정렬 */
+    .stImageCoordinates {
+        display: flex;
+        justify-content: center;
     }
     </style>
     """,
@@ -118,11 +124,15 @@ except Exception:
 with st.sidebar:
     st.title("⚙️ 시스템 설정")
 
-    # 제조번호 입력 칸 추가
-    lot_number = st.text_input(
+    # 제조번호 기본값을 빈 칸으로 변경 (placeholder 기본 안내)
+    lot_number_input = st.text_input(
         "🏷️ 제조번호 (Lot No.)",
-        value="P265MD123-01-10",
-        help="검수 보고서 및 대시보드 표기용 제조번호입니다.",
+        value="",
+        placeholder="예: P265MD123-01-10",
+        help="검수 보고서 및 대시보드 표기용 제조번호입니다. (미입력 시 '미입력' 표기)",
+    )
+    lot_number = (
+        lot_number_input.strip() if lot_number_input.strip() else "미입력"
     )
 
     st.markdown("---")
@@ -185,7 +195,7 @@ if "image_data" not in st.session_state:
 uploaded_files = st.file_uploader(
     "CD-BAR 단면 촬영 사진을 1장 이상 업로드하세요 (JPG, PNG 지원 / 여러 장 선택 가능)",
     type=["jpg", "jpeg", "png"],
-    accept_multiple_files=True,  # 여러 장 업로드 허용
+    accept_multiple_files=True,
 )
 
 if uploaded_files:
@@ -194,6 +204,12 @@ if uploaded_files:
         img_id = f"{file.name}_{file.size}"
         if img_id not in st.session_state.image_data:
             image = Image.open(file).convert("RGB")
+
+            # [핵심] 고해상도 사진 잘림 방지를 위한 자동 화면 최적화 리사이징 (최대 1200px)
+            max_size = 1200
+            if max(image.width, image.height) > max_size:
+                image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+
             results = model(image, conf=conf_thresh)
             boxes = results[0].boxes
 
@@ -225,6 +241,7 @@ if uploaded_files:
 
             st.session_state.image_data[img_id] = {
                 "file": file,
+                "image": image,  # 최적화된 이미지 저장
                 "centers": ai_centers,
                 "radius": target_radius,
                 "last_clicked": None,
@@ -243,7 +260,6 @@ if uploaded_files:
 
     grand_total_weight_kg = unit_weight_kg * grand_total_count
     grand_total_weight_ton = grand_total_weight_kg / 1000.0
-    bar_length_m = bar_length_mm / 1000.0
 
     # -----------------------------------------------------------------------------
     # 6. 상단 종합 대시보드 지표
@@ -255,7 +271,7 @@ if uploaded_files:
             f"""
             <div class="metric-container">
                 <div class="metric-title">제조번호 (Lot No.)</div>
-                <div class="metric-val-main" style="font-size: 1.1rem; padding-top: 8px;">{lot_number}</div>
+                <div class="metric-val-main" style="font-size: 1.1rem; padding-top: 8px; color: #0284c7;">{lot_number}</div>
                 <div class="metric-sub">검수 대상 번호</div>
             </div>
             """,
@@ -335,7 +351,7 @@ if uploaded_files:
         unsafe_allow_html=True,
     )
 
-    image = Image.open(selected_file).convert("RGB")
+    image = active_data["image"]
     target_radius = active_data["radius"]
 
     # 오버레이 이미지 생성
