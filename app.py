@@ -6,7 +6,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 from ultralytics import YOLO
 
 # -----------------------------------------------------------------------------
-# 1. 페이지 기본 설정 및 커스텀 CSS 스타일 적용 (폰트 +5pt)
+# 1. 페이지 기본 설정 및 커스텀 CSS
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="CD-BAR 스마트 카운팅 & 중량 분석 시스템",
@@ -20,11 +20,11 @@ st.markdown(
     .main {
         background-color: #f8fafc;
     }
-    
+
     html, body, p, span, label, div, .stMarkdown {
         font-size: 1.15rem !important;
     }
-    
+
     .header-card {
         background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
         color: #ffffff;
@@ -81,12 +81,12 @@ st.markdown(
         margin-bottom: 20px;
         line-height: 1.6;
     }
-    
+
     table, th, td {
         font-size: 1.15rem !important;
         padding: 12px !important;
     }
-    
+
     .stSidebar label, .stSidebar p, .stSidebar div {
         font-size: 1.1rem !important;
     }
@@ -101,13 +101,13 @@ st.markdown(
 )
 
 # -----------------------------------------------------------------------------
-# 2. 헤더 섹션
+# 2. 헤더
 # -----------------------------------------------------------------------------
 st.markdown(
     """
     <div class="header-card">
         <h1>🔩 CD-BAR 스마트 카운팅 & 중량 산출 시스템</h1>
-        <p>메인 묶음 공간 군집(Cluster) 자동 추출 · 하단 타 묶음 제외 · 이중 인식 중복 제거 엔진</p>
+        <p>AI 자동 단면 인식 · 규격 공차 필터링 · 중복 제거 · 클릭 한 번으로 수동 보정</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -123,11 +123,20 @@ def load_model():
 try:
     model = load_model()
 except Exception:
-    st.error("❌ 'best.pt' 모델을 불러올 수 없습니다. GitHub 저장소를 확인해 주세요.")
+    st.error("❌ 'best.pt' 모델을 불러올 수 없습니다. 저장소에 모델 파일이 있는지 확인해 주세요.")
     st.stop()
 
+# 추론용 이미지 해상도 상한(px). 화면 표시용 썸네일보다 훨씬 크게 유지해야
+# 촘촘하게 붙어있는 작은 단면들이 뭉개지지 않고 잘 분리 인식된다.
+# ponytail: 정확도가 더 필요하면 이 값과 YOLO_IMGSZ를 함께 올리면 되지만, 느려진다.
+INFER_MAX_SIDE = 2200
+YOLO_IMGSZ = 1536
+YOLO_IOU = 0.9  # 원형 단면은 서로 붙어있으면 박스가 크게 겹치므로, 기본 NMS(0.7)보다 느슨하게 잡아야
+                # 진짜 이웃한 개별 철근이 하나로 병합/삭제되지 않는다.
+DISPLAY_MAX_SIDE = 1200
+
 # -----------------------------------------------------------------------------
-# 4. 사이드바 - 설정 및 제조번호 입력 구역
+# 4. 사이드바 - 설정 및 제조번호 입력
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.title("⚙️ 시스템 설정")
@@ -136,7 +145,7 @@ with st.sidebar:
         "🏷️ 제조번호 (Lot No.)",
         value="",
         placeholder="예: P265MD123-01-10",
-        help="검수 보고서 표기용 제조번호입니다.",
+        help="검수 보고서 작성용 제조번호입니다.",
     )
     lot_number = lot_number_input.strip() if lot_number_input.strip() else "미입력"
 
@@ -150,24 +159,25 @@ with st.sidebar:
         step=0.01,
     )
     tolerance = st.slider(
-        "메인 묶음 선경 오차 범위 (%)",
+        "규격 오차 허용 범위 (%)",
         min_value=10,
         max_value=60,
         value=35,
         step=5,
+        help="단면 박스 크기가 중앙값 대비 이 범위를 벗어나면 오탐으로 간주해 제외합니다.",
     ) / 100.0
 
     st.markdown("---")
-    st.subheader("📏 제품 규격 및 중량 설정")
+    st.subheader("📏 철근 규격 및 중량 설정")
     bar_diameter = st.number_input(
-        "선경 (지름, mm)",
+        "직경 (Diameter, mm)",
         min_value=1.0,
         max_value=200.0,
         value=12.0,
         step=0.5,
     )
     bar_length_mm = st.number_input(
-        "제품 길이 (L, mm)",
+        "절단 길이 (L, mm)",
         min_value=100,
         max_value=30000,
         value=6000,
@@ -182,7 +192,7 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    if st.button("🧹 전체 사진 분석 데이터 초기화", use_container_width=True):
+    if st.button("🧹 전체 분석 데이터 초기화", use_container_width=True):
         st.session_state.image_data = {}
         st.rerun()
 
@@ -190,7 +200,7 @@ if "image_data" not in st.session_state:
     st.session_state.image_data = {}
 
 # -----------------------------------------------------------------------------
-# 5. 다중 이미지 업로드 & 메인 연산 프로세스
+# 5. 다중 이미지 업로드 & 메인 분석 프로세스
 # -----------------------------------------------------------------------------
 uploaded_files = st.file_uploader(
     "CD-BAR 단면 촬영 사진을 업로드하세요 (여러 장 선택 가능)",
@@ -202,19 +212,24 @@ if uploaded_files:
     for file in uploaded_files:
         img_id = f"{file.name}_{file.size}"
         if img_id not in st.session_state.image_data:
-            image = Image.open(file).convert("RGB")
+            original_image = Image.open(file).convert("RGB")
 
-            # 화면 최적화 리사이징 (최대 1200px)
-            max_size = 1200
-            if max(image.width, image.height) > max_size:
-                image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            # 추론용 이미지: 표시용 썸네일보다 큰 해상도를 유지해 작은 단면도 잘 잡히게 한다.
+            infer_image = original_image.copy()
+            if max(infer_image.width, infer_image.height) > INFER_MAX_SIDE:
+                infer_image.thumbnail((INFER_MAX_SIDE, INFER_MAX_SIDE), Image.Resampling.LANCZOS)
 
-            # 명암 보정(CLAHE) 제거 후 원본 그대로 고해상도(1024px) 추론
-            results = model(image, conf=conf_thresh, imgsz=1024)
+            # 화면 표시/클릭 좌표용 썸네일 (더 작게, 반응성 확보)
+            display_image = infer_image.copy()
+            if max(display_image.width, display_image.height) > DISPLAY_MAX_SIDE:
+                display_image.thumbnail((DISPLAY_MAX_SIDE, DISPLAY_MAX_SIDE), Image.Resampling.LANCZOS)
+            scale = display_image.width / infer_image.width
+
+            results = model(infer_image, conf=conf_thresh, imgsz=YOLO_IMGSZ, iou=YOLO_IOU, verbose=False)
             boxes = results[0].boxes
 
-            raw_ai_centers = []
-            target_radius = 12
+            raw_centers = []
+            target_radius_infer = 12
 
             if len(boxes) > 0:
                 xyxy = boxes.xyxy.cpu().numpy()
@@ -223,73 +238,41 @@ if uploaded_files:
 
                 median_w = np.median(widths)
                 median_h = np.median(heights)
-                target_radius = max(3, int((median_w + median_h) / 4))
+                target_radius_infer = max(3, int((median_w + median_h) / 4))
 
-                # 1단계: 선경 규격 필터링
+                # 1단계: 규격(지름) 공차 필터링 - 중앙값과 크게 다른 박스는 오탐/파편으로 간주
                 for box, w, h in zip(xyxy, widths, heights):
                     if (1.0 - tolerance) * median_w <= w <= (1.0 + tolerance) * median_w and \
                        (1.0 - tolerance) * median_h <= h <= (1.0 + tolerance) * median_h:
-                        cx = int((box[0] + box[2]) / 2)
-                        cy = int((box[1] + box[3]) / 2)
-                        raw_ai_centers.append((cx, cy))
+                        cx = (box[0] + box[2]) / 2.0
+                        cy = (box[1] + box[3]) / 2.0
+                        raw_centers.append((cx, cy))
 
-                # 2단계: 이중 원 중복 제거
-                clean_ai_centers = []
-                for cx, cy in raw_ai_centers:
+                # 2단계: 같은 단면이 중복 탐지된 경우만 제거 (같은 위치에 여러 박스)
+                clean_centers = []
+                for cx, cy in raw_centers:
                     is_duplicate = False
-                    for kx, ky in clean_ai_centers:
-                        if math.hypot(cx - kx, cy - ky) < (target_radius * 0.75):
+                    for kx, ky in clean_centers:
+                        if math.hypot(cx - kx, cy - ky) < (target_radius_infer * 0.75):
                             is_duplicate = True
                             break
                     if not is_duplicate:
-                        clean_ai_centers.append((cx, cy))
-
-                # 3단계: [핵심] 공간 연결 군집(Cluster) 분석을 통해 하단/외곽의 다른 묶음 자동 제거
-                if len(clean_ai_centers) > 0:
-                    max_connect_dist = target_radius * 3.3  # 인접 단면 허용 거리
-                    n = len(clean_ai_centers)
-                    adj = [[] for _ in range(n)]
-
-                    for i in range(n):
-                        for j in range(i + 1, n):
-                            d = math.hypot(clean_ai_centers[i][0] - clean_ai_centers[j][0], 
-                                           clean_ai_centers[i][1] - clean_ai_centers[j][1])
-                            if d <= max_connect_dist:
-                                adj[i].append(j)
-                                adj[j].append(i)
-
-                    visited = [False] * n
-                    components = []
-
-                    for i in range(n):
-                        if not visited[i]:
-                            comp = []
-                            queue = [i]
-                            visited[i] = True
-                            while queue:
-                                curr = queue.pop(0)
-                                comp.append(curr)
-                                for neighbor in adj[curr]:
-                                    if not visited[neighbor]:
-                                        visited[neighbor] = True
-                                        queue.append(neighbor)
-                            components.append(comp)
-
-                    # 가장 단면 개수가 많은 메인 묶음 군집만 최종 유지
-                    if components:
-                        largest_comp = max(components, key=len)
-                        final_ai_centers = [(clean_ai_centers[idx][0], clean_ai_centers[idx][1], True) for idx in largest_comp]
-                    else:
-                        final_ai_centers = [(cx, cy, True) for cx, cy in clean_ai_centers]
-                else:
-                    final_ai_centers = []
+                        clean_centers.append((cx, cy))
             else:
-                final_ai_centers = []
+                clean_centers = []
+
+            # 표시 좌표계로 환산해서 저장. 묶음 연결성으로 통째로 걸러내던 이전 로직은
+            # 연결이 한 군데만 끊겨도 정상 탐지된 단면 수십 개가 통째로 사라지는 원인이었으므로 제거.
+            # 남는 오탐(배경 이물 등)은 화면에서 클릭 한 번으로 지우는 편이 누락보다 훨씬 안전하다.
+            final_centers = [
+                (cx * scale, cy * scale, True) for cx, cy in clean_centers
+            ]
+            target_radius = max(3, int(round(target_radius_infer * scale)))
 
             st.session_state.image_data[img_id] = {
                 "file": file,
-                "image": image,
-                "centers": final_ai_centers,
+                "image": display_image,
+                "centers": final_centers,
                 "radius": target_radius,
                 "last_clicked": None,
             }
@@ -328,7 +311,7 @@ if uploaded_files:
             <div class="metric-container">
                 <div class="metric-title">총 검수 수량 (합계)</div>
                 <div class="metric-val-main">{grand_total_count} <span style="font-size:1.2rem;">개</span></div>
-                <div class="metric-sub">총 {len(uploaded_files)}장 메인 묶음 합계</div>
+                <div class="metric-sub">총 {len(uploaded_files)}장 합계</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -362,7 +345,7 @@ if uploaded_files:
         st.markdown(
             f"""
             <div class="metric-container">
-                <div class="metric-title">설정 제품 규격</div>
+                <div class="metric-title">설정 철근 규격</div>
                 <div class="metric-val-main">Ø{bar_diameter:.1f}</div>
                 <div class="metric-sub">{bar_length_mm:,} mm</div>
             </div>
@@ -373,7 +356,7 @@ if uploaded_files:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # -----------------------------------------------------------------------------
-    # 7. 개별 사진 선택 및 수동 클릭 보정 구역
+    # 7. 개별 사진 선택 및 수동 클릭 보정 구간
     # -----------------------------------------------------------------------------
     selected_file = st.selectbox(
         "📸 검수 및 수동 클릭 보정을 진행할 사진을 선택하세요:",
@@ -387,9 +370,9 @@ if uploaded_files:
     st.markdown(
         """
         <div class="guide-box">
-            👉 <b>터치/클릭 수동 보정 가이드:</b><br>
-            • <b>[기존 원 클릭]</b> : 잘못 인식된 원을 즉시 삭제합니다. ❌<br>
-            • <b>[빈 공간 클릭]</b> : 누락된 메인 묶음 단면에 수동 원(노란색)을 새롭게 추가합니다. 🟡
+            💡 <b>터치/클릭 수동 보정 가이드:</b><br>
+            • <b>[기존 점 클릭]</b> : 잘못 인식된 점을 즉시 삭제합니다. ❌<br>
+            • <b>[빈 공간 클릭]</b> : 누락된 단면 위치에 새로운 점(노란색)을 추가합니다. 💡
         </div>
         """,
         unsafe_allow_html=True,
@@ -437,18 +420,18 @@ if uploaded_files:
         st.rerun()
 
     # -----------------------------------------------------------------------------
-    # 8. 종합 검수 명세표
+    # 8. 종합 검수 명세서
     # -----------------------------------------------------------------------------
-    with st.expander("📋 제조번호별 사진별 상세 측정 명세표 보기", expanded=True):
-        spec_table = f"""
-        | 사진 파일명 | 측정 수량 (메인 묶음) | 예상 중량 (kg) | 비고 |
+    with st.expander("📋 제조번호별 사진별 상세 측정 명세서 보기", expanded=True):
+        spec_table = """
+        | 사진 파일명 | 측정 수량 (단면) | 산출 중량 (kg) | 비고 |
         | :--- | :--- | :--- | :--- |
         """
         for img_key, data in st.session_state.image_data.items():
             cnt = len(data["centers"])
             wt = cnt * unit_weight_kg
             fname = data["file"].name
-            spec_table += f"| **{fname}** | {cnt} EA | {wt:,.1f} kg | 메인 묶음 개별 산출 | \n"
+            spec_table += f"| **{fname}** | {cnt} EA | {wt:,.1f} kg | 사진별 산출 | \n"
 
         spec_table += f"""
         | **[합계 / Lot: {lot_number}]** | **{grand_total_count} EA** | **{grand_total_weight_kg:,.2f} kg ({grand_total_weight_ton:.3f} Ton)** | **총 {len(uploaded_files)}장 통합** |
