@@ -42,7 +42,6 @@ st.markdown(
         border-radius: 8px; font-size: 1.2rem !important; color: #0369a1; margin-bottom: 20px; line-height: 1.6;
     }
     
-    /* 모드 선택 라디오 버튼 서식 */
     div[data-testid="stRadio"] > label {
         font-weight: 800 !important;
         font-size: 1.2rem !important;
@@ -61,7 +60,7 @@ st.markdown(
     """
     <div class="header-card">
         <h1>🔩 CD-BAR 스마트 카운팅 & 지속적 AI 재학습 시스템</h1>
-        <p>박스 일괄 삭제 및 집중 AI 재탐지 모드 · 단면 순번 오버레이 · YOLO 라벨 자동 생성</p>
+        <p>시각적 썸네일 갤러리 선택 · 박스 일괄 보정 · AI 데이터 자동 축적 엔진</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -103,16 +102,19 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🧹 전체 사진 분석 데이터 초기화", use_container_width=True):
         st.session_state.image_data = {}
+        st.session_state.selected_img_idx = 0
         st.session_state.box_start_point = None
         st.rerun()
 
 if "image_data" not in st.session_state:
     st.session_state.image_data = {}
+if "selected_img_idx" not in st.session_state:
+    st.session_state.selected_img_idx = 0
 if "box_start_point" not in st.session_state:
     st.session_state.box_start_point = None
 
 # -----------------------------------------------------------------------------
-# 3. 타일링 추론 및 데이터셋 저장 함수
+# 3. 추론 및 데이터셋 저장 함수
 # -----------------------------------------------------------------------------
 def predict_with_slicing(img, model_obj, conf):
     w, h = img.size
@@ -304,17 +306,63 @@ if uploaded_files:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    selected_file = st.selectbox(
-        "📸 검수 및 수동 클릭 보정을 진행할 사진을 선택하세요:",
-        uploaded_files,
-        format_func=lambda x: f"📷 {x.name} (현재 카운트: {len(st.session_state.image_data[f'{x.name}_{x.size}']['centers'])}개)",
-    )
+    # -----------------------------------------------------------------------------
+    # 5. [신규 개선] 🖼️ 시각적 썸네일 갤러리 카드 & 빠른 이동 네비게이션
+    # -----------------------------------------------------------------------------
+    if st.session_state.selected_img_idx >= len(uploaded_files):
+        st.session_state.selected_img_idx = 0
 
+    st.markdown("### 🖼️ 검수 사진 선택 (썸네일 목록)")
+    
+    # 썸네일 그리드 출력 (4열 배치)
+    num_cols = 4
+    thumb_cols = st.columns(num_cols)
+    
+    for idx, file in enumerate(uploaded_files):
+        img_id = f"{file.name}_{file.size}"
+        thumb_data = st.session_state.image_data[img_id]
+        cnt = len(thumb_data["centers"])
+        is_selected = (idx == st.session_state.selected_img_idx)
+
+        with thumb_cols[idx % num_cols]:
+            st.image(thumb_data["image"], use_container_width=True)
+            
+            btn_label = f"✅ [{idx+1}] {file.name[:10]}... ({cnt}개)" if is_selected else f"📷 [{idx+1}] {file.name[:10]}... ({cnt}개)"
+            btn_type = "primary" if is_selected else "secondary"
+            
+            if st.button(btn_label, key=f"thumb_{idx}", type=btn_type, use_container_width=True):
+                st.session_state.selected_img_idx = idx
+                st.session_state.box_start_point = None
+                st.rerun()
+
+    st.markdown("---")
+
+    # 상단 이전/다음 빠른 슬라이드 이동 컨트롤러
+    c_nav1, c_nav2, c_nav3 = st.columns([1, 2, 1])
+    with c_nav1:
+        if st.button("◀ 이전 사진", use_container_width=True):
+            st.session_state.selected_img_idx = (st.session_state.selected_img_idx - 1) % len(uploaded_files)
+            st.session_state.box_start_point = None
+            st.rerun()
+            
+    with c_nav2:
+        curr_file = uploaded_files[st.session_state.selected_img_idx]
+        curr_cnt = len(st.session_state.image_data[f"{curr_file.name}_{curr_file.size}"]["centers"])
+        st.markdown(f"<div style='text-align: center; font-weight: 800; font-size: 1.3rem; color: #0284c7;'>📷 ({st.session_state.selected_img_idx + 1} / {len(uploaded_files)}) {curr_file.name} — [카운트: {curr_cnt}개]</div>", unsafe_allow_html=True)
+        
+    with c_nav3:
+        if st.button("다음 사진 ▶", use_container_width=True):
+            st.session_state.selected_img_idx = (st.session_state.selected_img_idx + 1) % len(uploaded_files)
+            st.session_state.box_start_point = None
+            st.rerun()
+
+    # 현재 선택된 이미지 데이터 세팅
+    selected_file = uploaded_files[st.session_state.selected_img_idx]
     current_id = f"{selected_file.name}_{selected_file.size}"
     active_data = st.session_state.image_data[current_id]
 
     # -----------------------------------------------------------------------------
-    # 5. [신규] 작업 모드 선택 및 가이드
+    # 6. 작업 모드 선택 및 가이드
     # -----------------------------------------------------------------------------
     st.markdown("### 🛠️ 수동 보정 작업 모드 선택")
     work_mode = st.radio(
@@ -324,7 +372,6 @@ if uploaded_files:
         key="selected_work_mode"
     )
 
-    # 모드 변경 시 박스 시작점 초기화
     if "last_mode" not in st.session_state or st.session_state.last_mode != work_mode:
         st.session_state.last_mode = work_mode
         st.session_state.box_start_point = None
@@ -359,7 +406,6 @@ if uploaded_files:
     try: font = ImageFont.load_default(size=font_size)
     except: font = ImageFont.load_default()
 
-    # 순번 원 오버레이
     for idx, (cx, cy, is_ai) in enumerate(active_data["centers"], start=1):
         x0, y0 = cx - target_radius, cy - target_radius
         x1, y1 = cx + target_radius, cy + target_radius
@@ -377,7 +423,6 @@ if uploaded_files:
         draw.text((tx + 1, ty + 1), num_str, fill="black", font=font)
         draw.text((tx, ty), num_str, fill="white", font=font)
 
-    # 박스 1차 클릭 선택 시 표시 십자가 타겟 드로잉
     if st.session_state.box_start_point is not None:
         bx, by = st.session_state.box_start_point
         draw.line([(bx - 20, by), (bx + 20, by)], fill="#00FFFF", width=3)
@@ -387,7 +432,7 @@ if uploaded_files:
     value = streamlit_image_coordinates(output_img, key=f"canvas_{current_id}")
 
     # -----------------------------------------------------------------------------
-    # 6. 클릭 보정 및 박스 연산 로직
+    # 7. 클릭 보정 및 박스 연산 로직
     # -----------------------------------------------------------------------------
     if value is not None and value != active_data["last_clicked"]:
         active_data["last_clicked"] = value
@@ -408,11 +453,9 @@ if uploaded_files:
 
         elif work_mode in ["📦 박스 영역 지정 일괄 삭제", "🔍 박스 영역 지정 AI 집중 재탐지"]:
             if st.session_state.box_start_point is None:
-                # 1차 클릭: 시작점 지정
                 st.session_state.box_start_point = (click_x, click_y)
                 st.rerun()
             else:
-                # 2차 클릭: 대각선 끝점 지정 ➔ 박스 처리 실행
                 x1, y1 = st.session_state.box_start_point
                 x2, y2 = click_x, click_y
                 
@@ -420,7 +463,6 @@ if uploaded_files:
                 min_y, max_y = min(y1, y2), max(y1, y2)
 
                 if work_mode == "📦 박스 영역 지정 일괄 삭제":
-                    # 박스 내부 원 일괄 삭제
                     new_centers = [
                         item for item in active_data["centers"]
                         if not (min_x <= item[0] <= max_x and min_y <= item[1] <= max_y)
@@ -428,10 +470,8 @@ if uploaded_files:
                     active_data["centers"] = new_centers
                 
                 elif work_mode == "🔍 박스 영역 지정 AI 집중 재탐지":
-                    # 박스 영역 크롭 후 AI 고밀도 탐지 실행
                     if (max_x - min_x) > 10 and (max_y - min_y) > 10:
                         roi_crop = image.crop((min_x, min_y, max_x, max_y))
-                        # 탐지 민감도를 대폭 낮춰 누락된 어두운 단면까지 적극 스캔
                         roi_res = model(roi_crop, conf=max(0.03, conf_thresh * 0.7), imgsz=1024)
                         
                         if len(roi_res[0].boxes) > 0:
@@ -440,7 +480,6 @@ if uploaded_files:
                                 cx = int((box[0] + box[2]) / 2) + min_x
                                 cy = int((box[1] + box[3]) / 2) + min_y
 
-                                # 기존 중복 원 확인
                                 is_dup = False
                                 for ex_cx, ex_cy, _ in active_data["centers"]:
                                     if math.hypot(cx - ex_cx, cy - ex_cy) < (target_radius * 0.70):
@@ -449,7 +488,6 @@ if uploaded_files:
                                 if not is_dup:
                                     active_data["centers"].append((cx, cy, True))
 
-                # 완료 후 상태 초기화
                 st.session_state.box_start_point = None
                 st.rerun()
 
