@@ -1,4 +1,6 @@
+import json
 import math
+import os
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
@@ -7,7 +9,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 from ultralytics import YOLO
 
 # -----------------------------------------------------------------------------
-# 1. 페이지 기본 설정 및 커스텀 CSS 스타일 적용
+# 1. 페이지 기본 설정 및 커스텀 CSS 스타일 적용 (폰트 +5pt)
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="CD-BAR 스마트 카운팅 & 중량 분석 시스템",
@@ -49,8 +51,8 @@ st.markdown(
 st.markdown(
     """
     <div class="header-card">
-        <h1>🔩 CD-BAR 스마트 카운팅 & 중량 산출 시스템</h1>
-        <p>타일링 분할 스캔 · 초밀집 대형 번들 정밀 감지 · 단면 순번 오버레이 · 통합 검수 보고서</p>
+        <h1>🔩 CD-BAR 스마트 카운팅 & 지속적 AI 재학습 시스템</h1>
+        <p>타일링 스캔 · 실시간 수동 보정 데이터 수집 · YOLO 라벨 자동 생성 엔진</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -80,9 +82,8 @@ with st.sidebar:
     conf_thresh = st.slider("탐지 민감도 (Confidence)", 0.03, 0.70, 0.12, 0.01)
     tolerance = st.slider("메인 묶음 선경 오차 범위 (%)", 10, 60, 40, 5) / 100.0
 
-    # 초밀집 대형 번들 대응 옵션 추가
-    use_tiling = st.checkbox("🧩 분할 타일링 스캔 (초밀집/작은 단면용)", value=True, help="체크 시 이미지를 4조각으로 나누어 돋보기 스캔하므로 수백 개의 작은 단면도 정확히 감지합니다.")
-    use_cluster_filter = st.checkbox("✂️ 외곽 타 묶음 자동 제거 (군집 필터)", value=False, help="체크 해제 시 전체 단면을 모조리 카운팅하며, 체크 시 밀집된 메인 묶음만 선별합니다.")
+    use_tiling = st.checkbox("🧩 분할 타일링 스캔 (초밀집/작은 단면용)", value=True)
+    use_cluster_filter = st.checkbox("✂️ 외곽 타 묶음 자동 제거 (군집 필터)", value=False)
 
     st.markdown("---")
     st.subheader("📏 제품 규격 및 중량 설정")
@@ -99,14 +100,13 @@ if "image_data" not in st.session_state:
     st.session_state.image_data = {}
 
 # -----------------------------------------------------------------------------
-# 3. 타일링(Slicing) 추론 함수
+# 3. 타일링(Slicing) 추론 및 데이터셋 저장 함수
 # -----------------------------------------------------------------------------
 def predict_with_slicing(img, model_obj, conf):
     w, h = img.size
     boxes_list = []
 
     if use_tiling:
-        # 이미지를 2x2 영역으로 나누어 고해상도로 정밀 스캔
         crop_w, crop_h = w // 2, h // 2
         overlaps = [
             (0, 0, crop_w + 50, crop_h + 50),
@@ -136,6 +136,42 @@ def predict_with_slicing(img, model_obj, conf):
             all_boxes = np.empty((0, 4))
 
     return all_boxes
+
+# [신규] 보정된 최종 결과를 YOLO 재학습용 이미지/라벨 파일로 저장하는 함수
+def save_yolo_dataset():
+    base_dir = "collected_dataset"
+    img_dir = os.path.join(base_dir, "images")
+    lbl_dir = os.path.join(base_dir, "labels")
+    os.makedirs(img_dir, exist_ok=True)
+    os.makedirs(lbl_dir, exist_ok=True)
+
+    saved_count = 0
+    for img_key, data in st.session_state.image_data.items():
+        fname = data["file"].name
+        fname_no_ext = os.path.splitext(fname)[0]
+        
+        # 1. 이미지 저장
+        img_path = os.path.join(img_dir, fname)
+        data["image"].save(img_path)
+
+        # 2. 보정 좌표를 YOLO txt 라벨로 변환하여 저장
+        txt_path = os.path.join(lbl_dir, f"{fname_no_ext}.txt")
+        W, H = data["image"].size
+        radius = data["radius"]
+        box_w = radius * 2.0
+        box_h = radius * 2.0
+
+        with open(txt_path, "w") as f:
+            for cx, cy, _ in data["centers"]:
+                x_center = cx / W
+                y_center = cy / H
+                w_norm = box_w / W
+                h_norm = box_h / H
+                # 클래스 0 (CD-BAR 단면)
+                f.write(f"0 {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}\n")
+        
+        saved_count += 1
+    return saved_count
 
 # -----------------------------------------------------------------------------
 # 4. 이미지 프로세스 및 메인 연산
@@ -176,7 +212,6 @@ if uploaded_files:
                         cy = int((box[1] + box[3]) / 2)
                         raw_ai_centers.append((cx, cy))
 
-                # 이중 원 중복 제거
                 clean_ai_centers = []
                 for cx, cy in raw_ai_centers:
                     is_duplicate = False
@@ -187,7 +222,6 @@ if uploaded_files:
                     if not is_duplicate:
                         clean_ai_centers.append((cx, cy))
 
-                # 공간 군집 필터링 선택 적용
                 if use_cluster_filter and len(clean_ai_centers) > 0:
                     max_connect_dist = target_radius * 3.5
                     n = len(clean_ai_centers)
@@ -322,8 +356,8 @@ if uploaded_files:
         else: active_data["centers"].append((click_x, click_y, False))
         st.rerun()
 
-    # 리포트 및 명세표
-    with st.expander("📋 상세 측정 명세표 및 보고서", expanded=True):
+    # 리포트 및 AI 재학습 데이터셋 저장 기능
+    with st.expander("📋 상세 측정 명세표 및 AI 데이터 축적", expanded=True):
         spec_table = "| 사진 파일명 | 측정 수량 | 예상 중량 (kg) | 비고 |\n| :--- | :--- | :--- | :--- |\n"
         report_list = []
 
@@ -341,8 +375,16 @@ if uploaded_files:
         spec_table += f"| **[합계 / Lot: {lot_number}]** | **{grand_total_count} EA** | **{grand_total_weight_kg:,.2f} kg ({grand_total_weight_ton:.3f} Ton)** | **총 {len(uploaded_files)}장 통합** |"
         st.markdown(spec_table)
 
-        df_report = pd.DataFrame(report_list)
-        st.download_button("📥 엑셀(CSV) 검수 보고서 다운로드", df_report.to_csv(index=False).encode('utf-8-sig'), f"CD_BAR_Report_{lot_number}.csv", "text/csv", use_container_width=True)
+        col_dl, col_train = st.columns(2)
+        with col_dl:
+            df_report = pd.DataFrame(report_list)
+            st.download_button("📥 엑셀(CSV) 검수 보고서 다운로드", df_report.to_csv(index=False).encode('utf-8-sig'), f"CD_BAR_Report_{lot_number}.csv", "text/csv", use_container_width=True)
+
+        # [신규] 사용자 보정 결과를 YOLO 데이터셋으로 자동 저장하는 버튼
+        with col_train:
+            if st.button("🧠 현재 보정 결과를 AI 재학습 데이터셋으로 저장", use_container_width=True):
+                n_saved = save_yolo_dataset()
+                st.success(f"✅ 총 {n_saved}장의 보정 완료 사진과 YOLO 라벨(.txt)이 'collected_dataset/' 폴더에 자동 축적되었습니다!")
 
 else:
     st.info("👆 상단의 업로드 창을 통해 CD-BAR 단면 사진(1장 이상)을 등록해 주세요.")
