@@ -36,10 +36,19 @@ st.markdown(
     .metric-title { font-size: 1.15rem !important; color: #64748b; font-weight: 700; margin-bottom: 6px; }
     .metric-val-main { font-size: 2.1rem !important; font-weight: 800; color: #0f172a; }
     .metric-sub { font-size: 1.1rem !important; color: #10b981; font-weight: 700; margin-top: 6px; }
+    
     .guide-box {
         background-color: #f0f9ff; border-left: 5px solid #0284c7; padding: 16px 20px;
         border-radius: 8px; font-size: 1.2rem !important; color: #0369a1; margin-bottom: 20px; line-height: 1.6;
     }
+    
+    /* 모드 선택 라디오 버튼 서식 */
+    div[data-testid="stRadio"] > label {
+        font-weight: 800 !important;
+        font-size: 1.2rem !important;
+        color: #0f172a !important;
+    }
+    
     table, th, td { font-size: 1.15rem !important; padding: 12px !important; }
     .stSidebar label, .stSidebar p, .stSidebar div { font-size: 1.1rem !important; }
     .stImageCoordinates { display: flex; justify-content: center; }
@@ -52,7 +61,7 @@ st.markdown(
     """
     <div class="header-card">
         <h1>🔩 CD-BAR 스마트 카운팅 & 지속적 AI 재학습 시스템</h1>
-        <p>타일링 스캔 · 실시간 수동 보정 데이터 수집 · YOLO 라벨 자동 생성 엔진</p>
+        <p>박스 일괄 삭제 및 집중 AI 재탐지 모드 · 단면 순번 오버레이 · YOLO 라벨 자동 생성</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -94,13 +103,16 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🧹 전체 사진 분석 데이터 초기화", use_container_width=True):
         st.session_state.image_data = {}
+        st.session_state.box_start_point = None
         st.rerun()
 
 if "image_data" not in st.session_state:
     st.session_state.image_data = {}
+if "box_start_point" not in st.session_state:
+    st.session_state.box_start_point = None
 
 # -----------------------------------------------------------------------------
-# 3. 타일링(Slicing) 추론 및 데이터셋 저장 함수
+# 3. 타일링 추론 및 데이터셋 저장 함수
 # -----------------------------------------------------------------------------
 def predict_with_slicing(img, model_obj, conf):
     w, h = img.size
@@ -137,7 +149,6 @@ def predict_with_slicing(img, model_obj, conf):
 
     return all_boxes
 
-# [신규] 보정된 최종 결과를 YOLO 재학습용 이미지/라벨 파일로 저장하는 함수
 def save_yolo_dataset():
     base_dir = "collected_dataset"
     img_dir = os.path.join(base_dir, "images")
@@ -150,11 +161,9 @@ def save_yolo_dataset():
         fname = data["file"].name
         fname_no_ext = os.path.splitext(fname)[0]
         
-        # 1. 이미지 저장
         img_path = os.path.join(img_dir, fname)
         data["image"].save(img_path)
 
-        # 2. 보정 좌표를 YOLO txt 라벨로 변환하여 저장
         txt_path = os.path.join(lbl_dir, f"{fname_no_ext}.txt")
         W, H = data["image"].size
         radius = data["radius"]
@@ -167,7 +176,6 @@ def save_yolo_dataset():
                 y_center = cy / H
                 w_norm = box_w / W
                 h_norm = box_h / H
-                # 클래스 0 (CD-BAR 단면)
                 f.write(f"0 {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}\n")
         
         saved_count += 1
@@ -305,7 +313,37 @@ if uploaded_files:
     current_id = f"{selected_file.name}_{selected_file.size}"
     active_data = st.session_state.image_data[current_id]
 
-    st.markdown('<div class="guide-box">👉 <b>수동 보정 가이드:</b> [기존 원 클릭 = 삭제 ❌] / [빈 공간 클릭 = 수동 추가 🟡]</div>', unsafe_allow_html=True)
+    # -----------------------------------------------------------------------------
+    # 5. [신규] 작업 모드 선택 및 가이드
+    # -----------------------------------------------------------------------------
+    st.markdown("### 🛠️ 수동 보정 작업 모드 선택")
+    work_mode = st.radio(
+        "원하는 보정 작업 방식을 선택하세요:",
+        ["🎯 1개씩 단일 클릭 추가/삭제", "📦 박스 영역 지정 일괄 삭제", "🔍 박스 영역 지정 AI 집중 재탐지"],
+        horizontal=True,
+        key="selected_work_mode"
+    )
+
+    # 모드 변경 시 박스 시작점 초기화
+    if "last_mode" not in st.session_state or st.session_state.last_mode != work_mode:
+        st.session_state.last_mode = work_mode
+        st.session_state.box_start_point = None
+
+    if work_mode == "🎯 1개씩 단일 클릭 추가/삭제":
+        st.markdown('<div class="guide-box">👉 <b>단일 클릭 가이드:</b> 기존 원 클릭 ➔ 삭제 ❌ / 빈 공간 클릭 ➔ 1개 추가 🟡</div>', unsafe_allow_html=True)
+    elif work_mode == "📦 박스 영역 지정 일괄 삭제":
+        st.markdown('<div class="guide-box">👉 <b>박스 일괄 삭제 가이드:</b> [1차 클릭 = 시작 모서리 📍] ➔ [2차 클릭 = 대각선 반대 모서리 📍] 지정 시 <b>박스 안의 원이 모조리 삭제</b>됩니다.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="guide-box">👉 <b>박스 AI 집중 재탐지 가이드:</b> [1차 클릭 = 시작 모서리 📍] ➔ [2차 클릭 = 반대 모서리 📍] 지정 시 <b>해당 영역만 AI가 집중 스캔하여 놓친 원을 자동 생성</b>합니다.</div>', unsafe_allow_html=True)
+
+    if st.session_state.box_start_point is not None:
+        col_c1, col_c2 = st.columns([3, 1])
+        with col_c1:
+            st.info(f"📍 시작 모서리 지정 완료! (x: {st.session_state.box_start_point[0]}, y: {st.session_state.box_start_point[1]}) 대각선 반대쪽 모서리를 클릭하세요.")
+        with col_c2:
+            if st.button("❌ 박스 선택 취소", use_container_width=True):
+                st.session_state.box_start_point = None
+                st.rerun()
 
     image = active_data["image"]
     target_radius = active_data["radius"]
@@ -321,6 +359,7 @@ if uploaded_files:
     try: font = ImageFont.load_default(size=font_size)
     except: font = ImageFont.load_default()
 
+    # 순번 원 오버레이
     for idx, (cx, cy, is_ai) in enumerate(active_data["centers"], start=1):
         x0, y0 = cx - target_radius, cy - target_radius
         x1, y1 = cx + target_radius, cy + target_radius
@@ -338,23 +377,81 @@ if uploaded_files:
         draw.text((tx + 1, ty + 1), num_str, fill="black", font=font)
         draw.text((tx, ty), num_str, fill="white", font=font)
 
+    # 박스 1차 클릭 선택 시 표시 십자가 타겟 드로잉
+    if st.session_state.box_start_point is not None:
+        bx, by = st.session_state.box_start_point
+        draw.line([(bx - 20, by), (bx + 20, by)], fill="#00FFFF", width=3)
+        draw.line([(bx, by - 20), (bx, by + 20)], fill="#00FFFF", width=3)
+        draw.ellipse([bx - 6, by - 6, bx + 6, by + 6], outline="#00FFFF", width=3)
+
     value = streamlit_image_coordinates(output_img, key=f"canvas_{current_id}")
 
+    # -----------------------------------------------------------------------------
+    # 6. 클릭 보정 및 박스 연산 로직
+    # -----------------------------------------------------------------------------
     if value is not None and value != active_data["last_clicked"]:
         active_data["last_clicked"] = value
         click_x, click_y = value["x"], value["y"]
 
-        hit_index = None
-        threshold_dist = max(target_radius, 12)
+        if work_mode == "🎯 1개씩 단일 클릭 추가/삭제":
+            hit_index = None
+            threshold_dist = max(target_radius, 12)
 
-        for idx, (cx, cy, is_ai) in enumerate(active_data["centers"]):
-            if math.hypot(cx - click_x, cy - click_y) <= threshold_dist:
-                hit_index = idx
-                break
+            for idx, (cx, cy, is_ai) in enumerate(active_data["centers"]):
+                if math.hypot(cx - click_x, cy - click_y) <= threshold_dist:
+                    hit_index = idx
+                    break
 
-        if hit_index is not None: active_data["centers"].pop(hit_index)
-        else: active_data["centers"].append((click_x, click_y, False))
-        st.rerun()
+            if hit_index is not None: active_data["centers"].pop(hit_index)
+            else: active_data["centers"].append((click_x, click_y, False))
+            st.rerun()
+
+        elif work_mode in ["📦 박스 영역 지정 일괄 삭제", "🔍 박스 영역 지정 AI 집중 재탐지"]:
+            if st.session_state.box_start_point is None:
+                # 1차 클릭: 시작점 지정
+                st.session_state.box_start_point = (click_x, click_y)
+                st.rerun()
+            else:
+                # 2차 클릭: 대각선 끝점 지정 ➔ 박스 처리 실행
+                x1, y1 = st.session_state.box_start_point
+                x2, y2 = click_x, click_y
+                
+                min_x, max_x = min(x1, x2), max(x1, x2)
+                min_y, max_y = min(y1, y2), max(y1, y2)
+
+                if work_mode == "📦 박스 영역 지정 일괄 삭제":
+                    # 박스 내부 원 일괄 삭제
+                    new_centers = [
+                        item for item in active_data["centers"]
+                        if not (min_x <= item[0] <= max_x and min_y <= item[1] <= max_y)
+                    ]
+                    active_data["centers"] = new_centers
+                
+                elif work_mode == "🔍 박스 영역 지정 AI 집중 재탐지":
+                    # 박스 영역 크롭 후 AI 고밀도 탐지 실행
+                    if (max_x - min_x) > 10 and (max_y - min_y) > 10:
+                        roi_crop = image.crop((min_x, min_y, max_x, max_y))
+                        # 탐지 민감도를 대폭 낮춰 누락된 어두운 단면까지 적극 스캔
+                        roi_res = model(roi_crop, conf=max(0.03, conf_thresh * 0.7), imgsz=1024)
+                        
+                        if len(roi_res[0].boxes) > 0:
+                            roi_boxes = roi_res[0].boxes.xyxy.cpu().numpy()
+                            for box in roi_boxes:
+                                cx = int((box[0] + box[2]) / 2) + min_x
+                                cy = int((box[1] + box[3]) / 2) + min_y
+
+                                # 기존 중복 원 확인
+                                is_dup = False
+                                for ex_cx, ex_cy, _ in active_data["centers"]:
+                                    if math.hypot(cx - ex_cx, cy - ex_cy) < (target_radius * 0.70):
+                                        is_dup = True
+                                        break
+                                if not is_dup:
+                                    active_data["centers"].append((cx, cy, True))
+
+                # 완료 후 상태 초기화
+                st.session_state.box_start_point = None
+                st.rerun()
 
     # 리포트 및 AI 재학습 데이터셋 저장 기능
     with st.expander("📋 상세 측정 명세표 및 AI 데이터 축적", expanded=True):
@@ -380,7 +477,6 @@ if uploaded_files:
             df_report = pd.DataFrame(report_list)
             st.download_button("📥 엑셀(CSV) 검수 보고서 다운로드", df_report.to_csv(index=False).encode('utf-8-sig'), f"CD_BAR_Report_{lot_number}.csv", "text/csv", use_container_width=True)
 
-        # [신규] 사용자 보정 결과를 YOLO 데이터셋으로 자동 저장하는 버튼
         with col_train:
             if st.button("🧠 현재 보정 결과를 AI 재학습 데이터셋으로 저장", use_container_width=True):
                 n_saved = save_yolo_dataset()
