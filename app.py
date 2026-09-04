@@ -60,7 +60,7 @@ st.markdown(
     """
     <div class="header-card">
         <h1>🔩 CD-BAR 스마트 카운팅 & 지속적 AI 재학습 시스템</h1>
-        <p>시각적 썸네일 갤러리 선택 · 박스 일괄 보정 · AI 데이터 자동 축적 엔진</p>
+        <p>강화된 중복 원 방지 엔진 · 박스 영역 일괄 편집 · 단면 순번 오버레이 · YOLO 라벨 자동 생성</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -102,19 +102,16 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🧹 전체 사진 분석 데이터 초기화", use_container_width=True):
         st.session_state.image_data = {}
-        st.session_state.selected_img_idx = 0
         st.session_state.box_start_point = None
         st.rerun()
 
 if "image_data" not in st.session_state:
     st.session_state.image_data = {}
-if "selected_img_idx" not in st.session_state:
-    st.session_state.selected_img_idx = 0
 if "box_start_point" not in st.session_state:
     st.session_state.box_start_point = None
 
 # -----------------------------------------------------------------------------
-# 3. 추론 및 데이터셋 저장 함수
+# 3. 타일링 추론 및 데이터셋 저장 함수
 # -----------------------------------------------------------------------------
 def predict_with_slicing(img, model_obj, conf):
     w, h = img.size
@@ -222,11 +219,12 @@ if uploaded_files:
                         cy = int((box[1] + box[3]) / 2)
                         raw_ai_centers.append((cx, cy))
 
+                # [핵심 보완] 거리 기반 NMS 임계값을 반지름의 1.2배로 강화하여 이중 원 완벽 제거
                 clean_ai_centers = []
                 for cx, cy in raw_ai_centers:
                     is_duplicate = False
                     for kx, ky in clean_ai_centers:
-                        if math.hypot(cx - kx, cy - ky) < (target_radius * 0.70):
+                        if math.hypot(cx - kx, cy - ky) < (target_radius * 1.2):
                             is_duplicate = True
                             break
                     if not is_duplicate:
@@ -291,7 +289,6 @@ if uploaded_files:
     grand_total_weight_kg = unit_weight_kg * grand_total_count
     grand_total_weight_ton = grand_total_weight_kg / 1000.0
 
-    # 대시보드 출력
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
         st.markdown(f'<div class="metric-container"><div class="metric-title">제조번호 (Lot No.)</div><div class="metric-val-main" style="font-size: 1.4rem !important; color: #0284c7;">{lot_number}</div><div class="metric-sub">검수 대상 번호</div></div>', unsafe_allow_html=True)
@@ -306,64 +303,15 @@ if uploaded_files:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # -----------------------------------------------------------------------------
-    # 5. [신규 개선] 🖼️ 시각적 썸네일 갤러리 카드 & 빠른 이동 네비게이션
-    # -----------------------------------------------------------------------------
-    if st.session_state.selected_img_idx >= len(uploaded_files):
-        st.session_state.selected_img_idx = 0
+    selected_file = st.selectbox(
+        "📸 검수 및 수동 클릭 보정을 진행할 사진을 선택하세요:",
+        uploaded_files,
+        format_func=lambda x: f"📷 {x.name} (현재 카운트: {len(st.session_state.image_data[f'{x.name}_{x.size}']['centers'])}개)",
+    )
 
-    st.markdown("### 🖼️ 검수 사진 선택 (썸네일 목록)")
-    
-    # 썸네일 그리드 출력 (4열 배치)
-    num_cols = 4
-    thumb_cols = st.columns(num_cols)
-    
-    for idx, file in enumerate(uploaded_files):
-        img_id = f"{file.name}_{file.size}"
-        thumb_data = st.session_state.image_data[img_id]
-        cnt = len(thumb_data["centers"])
-        is_selected = (idx == st.session_state.selected_img_idx)
-
-        with thumb_cols[idx % num_cols]:
-            st.image(thumb_data["image"], use_container_width=True)
-            
-            btn_label = f"✅ [{idx+1}] {file.name[:10]}... ({cnt}개)" if is_selected else f"📷 [{idx+1}] {file.name[:10]}... ({cnt}개)"
-            btn_type = "primary" if is_selected else "secondary"
-            
-            if st.button(btn_label, key=f"thumb_{idx}", type=btn_type, use_container_width=True):
-                st.session_state.selected_img_idx = idx
-                st.session_state.box_start_point = None
-                st.rerun()
-
-    st.markdown("---")
-
-    # 상단 이전/다음 빠른 슬라이드 이동 컨트롤러
-    c_nav1, c_nav2, c_nav3 = st.columns([1, 2, 1])
-    with c_nav1:
-        if st.button("◀ 이전 사진", use_container_width=True):
-            st.session_state.selected_img_idx = (st.session_state.selected_img_idx - 1) % len(uploaded_files)
-            st.session_state.box_start_point = None
-            st.rerun()
-            
-    with c_nav2:
-        curr_file = uploaded_files[st.session_state.selected_img_idx]
-        curr_cnt = len(st.session_state.image_data[f"{curr_file.name}_{curr_file.size}"]["centers"])
-        st.markdown(f"<div style='text-align: center; font-weight: 800; font-size: 1.3rem; color: #0284c7;'>📷 ({st.session_state.selected_img_idx + 1} / {len(uploaded_files)}) {curr_file.name} — [카운트: {curr_cnt}개]</div>", unsafe_allow_html=True)
-        
-    with c_nav3:
-        if st.button("다음 사진 ▶", use_container_width=True):
-            st.session_state.selected_img_idx = (st.session_state.selected_img_idx + 1) % len(uploaded_files)
-            st.session_state.box_start_point = None
-            st.rerun()
-
-    # 현재 선택된 이미지 데이터 세팅
-    selected_file = uploaded_files[st.session_state.selected_img_idx]
     current_id = f"{selected_file.name}_{selected_file.size}"
     active_data = st.session_state.image_data[current_id]
 
-    # -----------------------------------------------------------------------------
-    # 6. 작업 모드 선택 및 가이드
-    # -----------------------------------------------------------------------------
     st.markdown("### 🛠️ 수동 보정 작업 모드 선택")
     work_mode = st.radio(
         "원하는 보정 작업 방식을 선택하세요:",
@@ -431,9 +379,6 @@ if uploaded_files:
 
     value = streamlit_image_coordinates(output_img, key=f"canvas_{current_id}")
 
-    # -----------------------------------------------------------------------------
-    # 7. 클릭 보정 및 박스 연산 로직
-    # -----------------------------------------------------------------------------
     if value is not None and value != active_data["last_clicked"]:
         active_data["last_clicked"] = value
         click_x, click_y = value["x"], value["y"]
@@ -480,9 +425,10 @@ if uploaded_files:
                                 cx = int((box[0] + box[2]) / 2) + min_x
                                 cy = int((box[1] + box[3]) / 2) + min_y
 
+                                # [동일 적용] ROI 재인식 시에도 1.2배 거리 적용으로 중복 생성 차단
                                 is_dup = False
                                 for ex_cx, ex_cy, _ in active_data["centers"]:
-                                    if math.hypot(cx - ex_cx, cy - ex_cy) < (target_radius * 0.70):
+                                    if math.hypot(cx - ex_cx, cy - ex_cy) < (target_radius * 1.2):
                                         is_dup = True
                                         break
                                 if not is_dup:
@@ -491,7 +437,6 @@ if uploaded_files:
                 st.session_state.box_start_point = None
                 st.rerun()
 
-    # 리포트 및 AI 재학습 데이터셋 저장 기능
     with st.expander("📋 상세 측정 명세표 및 AI 데이터 축적", expanded=True):
         spec_table = "| 사진 파일명 | 측정 수량 | 예상 중량 (kg) | 비고 |\n| :--- | :--- | :--- | :--- |\n"
         report_list = []
